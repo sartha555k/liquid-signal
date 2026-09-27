@@ -9,6 +9,12 @@ export type ObjectionKey =
   | "usage"
   | "other";
 
+export type AudienceQuestion = {
+  id: string;
+  prompt: string;
+  options: string[];
+};
+
 export type SignalComment = {
   id: string;
   text: string;
@@ -16,6 +22,7 @@ export type SignalComment = {
   sourceId?: string;
   publishedAt?: string;
   analysis?: {
+    version?: string;
     isObjection: number;
     objectionType: ObjectionKey;
     objectionConfidence: number;
@@ -23,6 +30,12 @@ export type SignalComment = {
     spam: number;
     abuse: number;
     reviewRequired: boolean;
+    audienceAnswer?: {
+      questionId: string;
+      choice: string | null;
+      confidence: number;
+      probabilities: Record<string, number>;
+    };
   };
 };
 
@@ -32,6 +45,7 @@ export type SignalDataset = {
   source: "youtube" | "csv" | "demo";
   sourceLabel: string;
   comments: SignalComment[];
+  audienceQuestion?: AudienceQuestion;
   analyzedAt?: string;
   model?: string;
   inputTokens?: number;

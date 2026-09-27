@@ -33,6 +33,7 @@ export async function POST(request: Request) {
         model: dataset.model,
         inputTokens: dataset.inputTokens,
         costMicros: dataset.costUsd == null ? null : Math.round(dataset.costUsd * 1_000_000),
+        audienceQuestionJson: dataset.audienceQuestion ? JSON.stringify(dataset.audienceQuestion) : null,
         createdAt: now,
         updatedAt: now,
       }).onConflictDoUpdate({
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
           model: dataset.model,
           inputTokens: dataset.inputTokens,
           costMicros: dataset.costUsd == null ? null : Math.round(dataset.costUsd * 1_000_000),
+          audienceQuestionJson: dataset.audienceQuestion ? JSON.stringify(dataset.audienceQuestion) : null,
           updatedAt: now,
         },
       }),

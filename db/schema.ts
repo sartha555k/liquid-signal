@@ -12,6 +12,7 @@ export const datasets = sqliteTable(
     model: text("model"),
     inputTokens: integer("input_tokens"),
     costMicros: integer("cost_micros"),
+    audienceQuestionJson: text("audience_question_json"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -35,5 +36,18 @@ export const comments = sqliteTable(
   (table) => [
     index("idx_comments_dataset_id").on(table.datasetId),
     index("idx_comments_source_id").on(table.sourceId),
+  ]
+);
+
+export const analysisCache = sqliteTable(
+  "analysis_cache",
+  {
+    key: text("key").primaryKey(),
+    analysisJson: text("analysis_json").notNull(),
+    model: text("model").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_analysis_cache_created_at").on(table.createdAt),
   ]
 );

@@ -71,7 +71,7 @@ export async function POST(request: Request) {
     // A browser import asks for several small batches instead of keeping one
     // server request alive while a large video is paginated. YouTube itself
     // allows at most 100 comment threads per page.
-    const target = Math.min(Math.max(body.batchSize ?? 500, 1), 500);
+    const target = Math.min(Math.max(body.batchSize ?? 1000, 1), 1000);
     const comments: SignalComment[] = [];
     let pageToken = body.pageToken?.trim() || undefined;
     let videoTitle: string | undefined;

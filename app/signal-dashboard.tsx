@@ -8,10 +8,12 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronDown,
+  CircleHelp,
   CircleDot,
   FileUp,
   LayoutDashboard,
   MessageSquareText,
+  Plus,
   Search,
   Settings2,
   ShieldCheck,
@@ -29,7 +31,7 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
 import { demoDataset } from "@/lib/demo-data";
-import type { ObjectionKey, SignalComment, SignalDataset } from "@/lib/types";
+import type { AudienceQuestion, ObjectionKey, SignalComment, SignalDataset } from "@/lib/types";
 
 type SignalView = "all" | "objections" | "intent";
 type CommentFilter = "all" | "objections" | "intent" | "review" | "flagged" | "unanalyzed";
@@ -47,9 +49,19 @@ type YouTubeBatchResponse = {
 };
 
 const YOUTUBE_IMPORT_MILESTONE = 10_000;
-const YOUTUBE_BATCH_SIZE = 500;
+const YOUTUBE_BATCH_SIZE = 1000;
 const JEV_BATCH_SIZE = 25;
-const JEV_BATCH_CONCURRENCY = 3;
+const JEV_BATCH_CONCURRENCY = 6;
+const ANALYSIS_VERSION = "compact-v2";
+
+function normalizeCommentText(text: string) {
+  return text.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function analysisMatches(comment: SignalComment, question?: AudienceQuestion) {
+  if (comment.analysis?.version !== ANALYSIS_VERSION) return false;
+  return !question || comment.analysis.audienceAnswer?.questionId === question.id;
+}
 
 const COMMENT_FILTERS: Array<{ key: CommentFilter; label: string }> = [
   { key: "all", label: "All" },
@@ -182,6 +194,9 @@ export default function SignalDashboard() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [analysisCount, setAnalysisCount] = useState(0);
+  const [questionOpen, setQuestionOpen] = useState(false);
+  const [questionPrompt, setQuestionPrompt] = useState("");
+  const [questionOptions, setQuestionOptions] = useState(["", ""]);
   const [query, setQuery] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const importAbortRef = useRef<AbortController | null>(null);
@@ -203,6 +218,35 @@ export default function SignalDashboard() {
     () => analyzed.filter((comment) => (comment.analysis?.purchaseIntent ?? 0) >= .75),
     [analyzed]
   );
+
+  const readyAnalysisCount = useMemo(
+    () => dataset.comments.filter((comment) => analysisMatches(comment, dataset.audienceQuestion)).length,
+    [dataset.comments, dataset.audienceQuestion]
+  );
+
+  const audienceSummary = useMemo(() => {
+    const question = dataset.audienceQuestion;
+    if (!question) return null;
+    const answers = dataset.comments
+      .map((comment) => comment.analysis?.audienceAnswer)
+      .filter((answer) => answer?.questionId === question.id);
+    const relevant = answers.filter((answer) => answer?.choice);
+    const counts = new Map(question.options.map((option) => [option, 0]));
+    relevant.forEach((answer) => {
+      if (answer?.choice && counts.has(answer.choice)) counts.set(answer.choice, (counts.get(answer.choice) ?? 0) + 1);
+    });
+    return {
+      question,
+      answered: answers.length,
+      relevant: relevant.length,
+      notRelevant: answers.length - relevant.length,
+      options: question.options.map((option) => ({
+        option,
+        count: counts.get(option) ?? 0,
+        share: relevant.length ? Math.round(((counts.get(option) ?? 0) / relevant.length) * 100) : 0,
+      })).sort((a, b) => b.count - a.count),
+    };
+  }, [dataset.audienceQuestion, dataset.comments]);
 
   const ranked = useMemo(() => {
     const counts = new Map<ObjectionKey, number>();
@@ -526,9 +570,63 @@ export default function SignalDashboard() {
     toast.success(`Imported ${comments.length} comments`, { description: "Import complete. Click Analyse with Jev when you’re ready." });
   }
 
+  function editAudienceQuestion() {
+    setQuestionPrompt(dataset.audienceQuestion?.prompt ?? "");
+    setQuestionOptions(dataset.audienceQuestion?.options ?? ["", ""]);
+    setQuestionOpen(true);
+  }
+
+  function saveAudienceQuestion() {
+    const prompt = questionPrompt.trim();
+    const options = questionOptions
+      .map((option) => option.trim())
+      .filter((option, index, values) => option && values.findIndex((value) => value.toLocaleLowerCase() === option.toLocaleLowerCase()) === index)
+      .slice(0, 6);
+    if (!prompt || options.length < 2) {
+      toast.error("Add a question and at least two different options");
+      return;
+    }
+    const audienceQuestion: AudienceQuestion = { id: crypto.randomUUID(), prompt, options };
+    setDataset((current) => ({ ...current, audienceQuestion }));
+    setQuestionOpen(false);
+    toast.success("Audience question added", { description: "Jev will answer it during the same analysis run." });
+  }
+
+  function removeAudienceQuestion() {
+    setDataset((current) => ({ ...current, audienceQuestion: undefined }));
+    setQuestionOpen(false);
+    setQuestionPrompt("");
+    setQuestionOptions(["", ""]);
+  }
+
   async function analyzeWithJev() {
     if (analyzing) return;
-    const pendingComments = dataset.comments.filter((comment) => !comment.analysis);
+
+    const groups = new Map<string, SignalComment[]>();
+    dataset.comments.forEach((comment) => {
+      const key = normalizeCommentText(comment.text);
+      groups.set(key, [...(groups.get(key) ?? []), comment]);
+    });
+    const reusable = new Map<string, NonNullable<SignalComment["analysis"]>>();
+    const pendingComments: SignalComment[] = [];
+    let alreadyAnalyzed = 0;
+    groups.forEach((comments, key) => {
+      const existing = comments.find((comment) => analysisMatches(comment, dataset.audienceQuestion))?.analysis;
+      if (existing) {
+        reusable.set(key, existing);
+        alreadyAnalyzed += comments.length;
+      } else pendingComments.push(comments[0]);
+    });
+
+    if (reusable.size) {
+      setDataset((current) => ({
+        ...current,
+        comments: current.comments.map((comment) => {
+          const analysis = reusable.get(normalizeCommentText(comment.text));
+          return analysis ? { ...comment, analysis } : comment;
+        }),
+      }));
+    }
     if (!pendingComments.length) {
       toast.success("Every comment is already analysed");
       return;
@@ -536,11 +634,12 @@ export default function SignalDashboard() {
 
     const controller = new AbortController();
     analysisAbortRef.current = controller;
-    const alreadyAnalyzed = dataset.comments.length - pendingComments.length;
     let processed = 0;
+    let cacheHits = 0;
     let totalInputTokens = dataset.inputTokens ?? 0;
     let totalCost = dataset.costUsd ?? 0;
     let model = dataset.model;
+    const duplicateSavings = dataset.comments.length - groups.size;
 
     setAnalyzing(true);
     setAnalysisCount(alreadyAnalyzed);
@@ -551,34 +650,46 @@ export default function SignalDashboard() {
       batches.push(pendingComments.slice(index, index + JEV_BATCH_SIZE));
     }
 
+    const requestBatch = async (comments: SignalComment[]) => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ comments, audienceQuestion: dataset.audienceQuestion }),
+          signal: controller.signal,
+        });
+        const payload = await response.json() as {
+          comments?: SignalComment[];
+          model?: string;
+          inputTokens?: number;
+          costUsd?: number;
+          cachedCount?: number;
+          error?: string;
+        };
+        if (response.ok && payload.comments) return payload;
+        if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) {
+          throw new Error(payload.error ?? "Analysis failed");
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 500 * (2 ** attempt)));
+        if (controller.signal.aborted) throw new DOMException("Analysis stopped", "AbortError");
+      }
+      throw new Error("Analysis failed");
+    };
+
     try {
       for (let index = 0; index < batches.length; index += JEV_BATCH_CONCURRENCY) {
         const wave = batches.slice(index, index + JEV_BATCH_CONCURRENCY);
-        const waveResults = await Promise.allSettled(wave.map(async (comments) => {
-          const response = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              comments,
-              context: { product: dataset.name, source: dataset.source },
-            }),
-            signal: controller.signal,
-          });
-          const payload = await response.json() as {
-            comments?: SignalComment[];
-            model?: string;
-            inputTokens?: number;
-            costUsd?: number;
-            error?: string;
-          };
-          if (!response.ok || !payload.comments) throw new Error(payload.error ?? "Analysis failed");
-          return payload;
-        }));
+        const waveResults = await Promise.allSettled(wave.map(requestBatch));
         const payloads = waveResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
-
         const completedComments = payloads.flatMap((payload) => payload.comments ?? []);
-        const analyzedById = new Map(completedComments.map((comment) => [comment.id, comment]));
-        processed += completedComments.length;
+        const completedByText = new Map(completedComments.flatMap((comment) => comment.analysis
+          ? [[normalizeCommentText(comment.text), comment.analysis] as const]
+          : []));
+        let completedCoverage = 0;
+        completedByText.forEach((_, key) => { completedCoverage += groups.get(key)?.length ?? 0; });
+
+        processed += completedCoverage;
+        cacheHits += payloads.reduce((sum, payload) => sum + (payload.cachedCount ?? 0), 0);
         totalInputTokens += payloads.reduce((sum, payload) => sum + (payload.inputTokens ?? 0), 0);
         totalCost += payloads.reduce((sum, payload) => sum + (payload.costUsd ?? 0), 0);
         model = payloads.find((payload) => payload.model)?.model ?? model;
@@ -588,7 +699,10 @@ export default function SignalDashboard() {
         setAnalysisProgress(Math.round((completedTotal / dataset.comments.length) * 100));
         setDataset((current) => ({
           ...current,
-          comments: current.comments.map((comment) => analyzedById.get(comment.id) ?? comment),
+          comments: current.comments.map((comment) => {
+            const analysis = completedByText.get(normalizeCommentText(comment.text));
+            return analysis ? { ...comment, analysis } : comment;
+          }),
           analyzedAt: new Date().toISOString(),
           model,
           inputTokens: totalInputTokens,
@@ -605,7 +719,7 @@ export default function SignalDashboard() {
         return current;
       });
       toast.success(`Analysed all ${dataset.comments.length.toLocaleString()} comments with Jev`, {
-        description: `Estimated cost: $${totalCost.toFixed(4)}`,
+        description: `$${totalCost.toFixed(4)} total · ${duplicateSavings.toLocaleString()} duplicate calls avoided · ${cacheHits.toLocaleString()} cache hits`,
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -689,12 +803,12 @@ export default function SignalDashboard() {
           </div>
           <div className="mt-auto rounded-2xl bg-[#101827] p-4 text-white">
             <div className="flex items-center justify-between text-xs text-slate-300">
-              <span>Protected batching</span><span>25 at a time</span>
+              <span>Optimised analysis</span><span>6× parallel</span>
             </div>
             <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
               <div className="h-full w-[24%] rounded-full bg-[#dfff58]" />
             </div>
-            <p className="mt-3 text-xs leading-relaxed text-slate-400">Jev continues through every imported comment in small batches. You can stop and resume without losing completed results.</p>
+            <p className="mt-3 text-xs leading-relaxed text-slate-400">Compact questions, duplicate reuse, and a persistent result cache reduce both waiting time and repeat spend.</p>
           </div>
         </aside>
 
@@ -719,22 +833,68 @@ export default function SignalDashboard() {
             </div>
           </div>
 
-          {dataset.source !== "demo" && analyzed.length < dataset.comments.length && !analyzing && (
-            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-emerald-700/20 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-3">
-                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white"><CheckCircle2 className="size-5" /></span>
-                <div>
-                  <p className="font-bold text-emerald-950">{analyzed.length ? "Analysis paused — your results are saved" : "Import complete"}</p>
-                  <p className="mt-1 text-sm leading-relaxed text-emerald-900/70">
-                    {analyzed.length
-                      ? `${analyzed.length.toLocaleString()} of ${dataset.comments.length.toLocaleString()} comments are analysed. Resume to finish the remaining ${(dataset.comments.length - analyzed.length).toLocaleString()}.`
-                      : `${dataset.comments.length.toLocaleString()} comments are ready. Click Analyse with Jev to classify all of them.`}
-                  </p>
+          {dataset.source !== "demo" && (readyAnalysisCount < dataset.comments.length || questionOpen) && !analyzing && (
+            <div className="mt-5 rounded-2xl border border-emerald-700/20 bg-emerald-50 p-4 sm:p-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white"><CheckCircle2 className="size-5" /></span>
+                  <div>
+                    <p className="font-bold text-emerald-950">{readyAnalysisCount ? "Analysis paused — your results are saved" : "Import complete"}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-emerald-900/70">
+                      {readyAnalysisCount
+                        ? `${readyAnalysisCount.toLocaleString()} of ${dataset.comments.length.toLocaleString()} comments are complete. Resume to finish the remaining ${(dataset.comments.length - readyAnalysisCount).toLocaleString()}.`
+                        : `${dataset.comments.length.toLocaleString()} comments are ready for signals, purchase intent${dataset.audienceQuestion ? ", and your audience question" : ""}.`}
+                    </p>
+                    {dataset.audienceQuestion && !questionOpen && (
+                      <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-emerald-950"><CircleHelp className="size-4" /> “{dataset.audienceQuestion.prompt}” · {dataset.audienceQuestion.options.length} choices</p>
+                    )}
+                  </div>
                 </div>
+                {!questionOpen && (
+                  <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                    <Button onClick={editAudienceQuestion} variant="outline" className="h-11 rounded-xl border-emerald-800/20 bg-white/70 text-emerald-950">
+                      <CircleHelp className="size-4" /> {dataset.audienceQuestion ? "Edit question" : "Add audience question"}
+                    </Button>
+                    <Button onClick={analyzeWithJev} className="h-11 rounded-xl bg-[#101827] px-5 text-white hover:bg-[#1b2638]">
+                      <Sparkles className="size-4 text-[#dfff58]" /> {readyAnalysisCount ? "Resume analysis" : dataset.audienceQuestion ? "Analyse both" : "Analyse with Jev"}
+                    </Button>
+                  </div>
+                )}
               </div>
-              <Button onClick={analyzeWithJev} className="h-11 shrink-0 rounded-xl bg-[#101827] px-5 text-white hover:bg-[#1b2638]">
-                <Sparkles className="size-4 text-[#dfff58]" /> {analyzed.length ? "Resume analysis" : "Analyse with Jev"}
-              </Button>
+
+              {questionOpen && (
+                <div className="mt-5 rounded-2xl border border-emerald-900/15 bg-white p-4 sm:p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="font-bold text-[#101827]">Ask the audience one specific question</p>
+                      <p className="mt-1 text-sm text-slate-500">Jev will classify every relevant comment into one of your choices. Unclear comments are excluded automatically.</p>
+                    </div>
+                    <Button onClick={() => setQuestionOpen(false)} variant="ghost" size="icon" className="size-8 rounded-lg" aria-label="Close question editor"><X className="size-4" /></Button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <Label htmlFor="audience-question">Your question</Label>
+                    <Input id="audience-question" value={questionPrompt} onChange={(event) => setQuestionPrompt(event.target.value)} maxLength={240} placeholder="Which phone do people think has better battery life?" className="h-12 rounded-xl bg-white" />
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    {questionOptions.map((option, index) => (
+                      <div key={index} className="space-y-2">
+                        <Label htmlFor={`audience-option-${index}`}>Choice {index + 1}</Label>
+                        <div className="flex gap-2">
+                          <Input id={`audience-option-${index}`} value={option} onChange={(event) => setQuestionOptions((current) => current.map((value, optionIndex) => optionIndex === index ? event.target.value : value))} maxLength={80} placeholder={index === 0 ? "iPhone" : index === 1 ? "Samsung" : "Another choice"} className="h-11 rounded-xl" />
+                          {questionOptions.length > 2 && <Button onClick={() => setQuestionOptions((current) => current.filter((_, optionIndex) => optionIndex !== index))} variant="ghost" size="icon" className="size-11 shrink-0 rounded-xl" aria-label={`Remove choice ${index + 1}`}><X className="size-4" /></Button>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    {questionOptions.length < 6 && <Button onClick={() => setQuestionOptions((current) => [...current, ""])} variant="outline" className="rounded-xl"><Plus className="size-4" /> Add choice</Button>}
+                    <div className="flex gap-2 sm:ml-auto">
+                      {dataset.audienceQuestion && <Button onClick={removeAudienceQuestion} variant="ghost" className="rounded-xl text-slate-500">Remove question</Button>}
+                      <Button onClick={saveAudienceQuestion} className="rounded-xl bg-[#101827] text-white">Use this question <ArrowRight className="size-4" /></Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -766,6 +926,33 @@ export default function SignalDashboard() {
                 : `${dataset.comments.length} comments ready to analyse`}
             </div>
           </div>
+
+          {audienceSummary && audienceSummary.answered > 0 && (
+            <article className="mt-5 overflow-hidden rounded-[26px] border border-black/10 bg-white">
+              <div className="flex flex-col gap-4 border-b border-black/10 bg-[#eaf6ff] p-5 sm:flex-row sm:items-start sm:justify-between sm:p-6">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.13em] text-blue-700">Your audience question</p>
+                  <h2 className="mt-2 text-xl font-bold tracking-[-0.035em] sm:text-2xl">{audienceSummary.question.prompt}</h2>
+                  <p className="mt-2 text-sm text-slate-500">{audienceSummary.relevant.toLocaleString()} relevant opinions · {audienceSummary.notRelevant.toLocaleString()} unclear or unrelated comments excluded</p>
+                </div>
+                {!analyzing && <Button onClick={editAudienceQuestion} variant="outline" className="shrink-0 rounded-xl border-black/15 bg-white">Ask a different question</Button>}
+              </div>
+              <div className="grid gap-4 p-5 sm:grid-cols-2 sm:p-6 lg:grid-cols-3">
+                {audienceSummary.options.map((item, index) => (
+                  <div key={item.option} className="rounded-2xl border border-black/10 bg-[#f8f7f2] p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate text-sm font-bold">{item.option}</span>
+                      <strong className="text-xl tracking-[-0.04em]">{item.share}%</strong>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/[.07]">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${item.share}%`, backgroundColor: ["#101827", "#ff2e2e", "#2d82c7", "#7c3aed", "#059669", "#d97706"][index % 6] }} />
+                    </div>
+                    <p className="mt-3 text-xs font-semibold text-slate-500">{item.count.toLocaleString()} comments</p>
+                  </div>
+                ))}
+              </div>
+            </article>
+          )}
 
           <div className="mt-5 grid gap-5 xl:grid-cols-[1.35fr_.65fr]">
             <article className="overflow-hidden rounded-[26px] bg-[#101827] text-white shadow-[0_20px_60px_rgba(16,24,39,.14)]">
