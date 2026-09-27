@@ -10,6 +10,7 @@ import {
   ChevronDown,
   CircleHelp,
   CircleDot,
+  Download,
   FileUp,
   LayoutDashboard,
   MessageSquareText,
@@ -50,8 +51,8 @@ type YouTubeBatchResponse = {
 
 const YOUTUBE_IMPORT_MILESTONE = 10_000;
 const YOUTUBE_BATCH_SIZE = 1000;
-const JEV_BATCH_SIZE = 25;
-const JEV_BATCH_CONCURRENCY = 6;
+const JEV_BATCH_SIZE = 1_000;
+const JEV_BATCH_CONCURRENCY = 1;
 const ANALYSIS_VERSION = "compact-v2";
 
 function normalizeCommentText(text: string) {
@@ -222,6 +223,16 @@ export default function SignalDashboard() {
   const readyAnalysisCount = useMemo(
     () => dataset.comments.filter((comment) => analysisMatches(comment, dataset.audienceQuestion)).length,
     [dataset.comments, dataset.audienceQuestion]
+  );
+
+  const coreAnalysisCount = useMemo(
+    () => dataset.comments.filter((comment) => comment.analysis?.version === ANALYSIS_VERSION).length,
+    [dataset.comments]
+  );
+  const questionOnlyReady = Boolean(
+    dataset.audienceQuestion
+    && coreAnalysisCount === dataset.comments.length
+    && readyAnalysisCount < dataset.comments.length
   );
 
   const audienceSummary = useMemo(() => {
@@ -525,7 +536,7 @@ export default function SignalDashboard() {
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         const partial = importSessionRef.current;
-        if (importAbortActionRef.current === "use" && partial?.comments.length) finishYouTubeImport(partial);
+        if ((importAbortActionRef.current as "use" | "discard") === "use" && partial?.comments.length) finishYouTubeImport(partial);
         return;
       }
       toast.error(error instanceof Error ? error.message : "YouTube import failed", {
@@ -570,9 +581,33 @@ export default function SignalDashboard() {
     toast.success(`Imported ${comments.length} comments`, { description: "Import complete. Click Analyse with Jev when you’re ready." });
   }
 
+  function downloadImportedCsv() {
+    const escape = (value?: string) => `"${(value ?? "").replace(/"/g, '""')}"`;
+    const rows = [
+      ["source", "source_id", "published_at", "comment"].map(escape).join(","),
+      ...dataset.comments.map((comment) => [comment.source, comment.sourceId, comment.publishedAt, comment.text].map(escape).join(",")),
+    ];
+    const blob = new Blob(["\ufeff", rows.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${dataset.name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "youtube-comments"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast.success(`Downloaded ${dataset.comments.length.toLocaleString()} comments as CSV`);
+  }
+
   function editAudienceQuestion() {
     setQuestionPrompt(dataset.audienceQuestion?.prompt ?? "");
     setQuestionOptions(dataset.audienceQuestion?.options ?? ["", ""]);
+    setQuestionOpen(true);
+  }
+
+  function startNewAudienceQuestion() {
+    setQuestionPrompt("");
+    setQuestionOptions(["", ""]);
     setQuestionOpen(true);
   }
 
@@ -601,6 +636,10 @@ export default function SignalDashboard() {
 
   async function analyzeWithJev() {
     if (analyzing) return;
+    const audienceOnly = Boolean(
+      dataset.audienceQuestion
+      && dataset.comments.every((comment) => comment.analysis?.version === ANALYSIS_VERSION)
+    );
 
     const groups = new Map<string, SignalComment[]>();
     dataset.comments.forEach((comment) => {
@@ -655,7 +694,7 @@ export default function SignalDashboard() {
         const response = await fetch("/api/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ comments, audienceQuestion: dataset.audienceQuestion }),
+          body: JSON.stringify({ comments, audienceQuestion: dataset.audienceQuestion, audienceOnly }),
           signal: controller.signal,
         });
         const payload = await response.json() as {
@@ -830,6 +869,11 @@ export default function SignalDashboard() {
               <Button onClick={() => setYoutubeOpen(true)} className="h-11 flex-1 rounded-xl bg-[#ff2e2e] px-5 text-white shadow-[0_8px_24px_rgba(255,46,46,.22)] hover:bg-[#e52323] sm:flex-none">
                 <Video className="size-4" /> Import YouTube
               </Button>
+              {dataset.source !== "demo" && (
+                <Button onClick={downloadImportedCsv} variant="outline" className="h-11 w-full rounded-xl border-black/15 bg-white px-4 sm:w-auto">
+                  <Download className="size-4" /> Download CSV
+                </Button>
+              )}
             </div>
           </div>
 
@@ -839,9 +883,11 @@ export default function SignalDashboard() {
                 <div className="flex items-start gap-3">
                   <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white"><CheckCircle2 className="size-5" /></span>
                   <div>
-                    <p className="font-bold text-emerald-950">{readyAnalysisCount ? "Analysis paused — your results are saved" : "Import complete"}</p>
+                    <p className="font-bold text-emerald-950">{questionOnlyReady ? "New question ready" : readyAnalysisCount ? "Analysis paused — your results are saved" : "Import complete"}</p>
                     <p className="mt-1 text-sm leading-relaxed text-emerald-900/70">
-                      {readyAnalysisCount
+                      {questionOnlyReady
+                        ? `Your existing signals are saved. Jev will only classify ${dataset.comments.length.toLocaleString()} comments for this new question.`
+                        : readyAnalysisCount
                         ? `${readyAnalysisCount.toLocaleString()} of ${dataset.comments.length.toLocaleString()} comments are complete. Resume to finish the remaining ${(dataset.comments.length - readyAnalysisCount).toLocaleString()}.`
                         : `${dataset.comments.length.toLocaleString()} comments are ready for signals, purchase intent${dataset.audienceQuestion ? ", and your audience question" : ""}.`}
                     </p>
@@ -856,7 +902,7 @@ export default function SignalDashboard() {
                       <CircleHelp className="size-4" /> {dataset.audienceQuestion ? "Edit question" : "Add audience question"}
                     </Button>
                     <Button onClick={analyzeWithJev} className="h-11 rounded-xl bg-[#101827] px-5 text-white hover:bg-[#1b2638]">
-                      <Sparkles className="size-4 text-[#dfff58]" /> {readyAnalysisCount ? "Resume analysis" : dataset.audienceQuestion ? "Analyse both" : "Analyse with Jev"}
+                      <Sparkles className="size-4 text-[#dfff58]" /> {questionOnlyReady ? "Analyse new question" : readyAnalysisCount ? "Resume analysis" : dataset.audienceQuestion ? "Analyse both" : "Analyse with Jev"}
                     </Button>
                   </div>
                 )}
@@ -927,6 +973,19 @@ export default function SignalDashboard() {
             </div>
           </div>
 
+          {dataset.source !== "demo" && readyAnalysisCount === dataset.comments.length && !audienceSummary && !questionOpen && !analyzing && (
+            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-blue-700/15 bg-[#eaf6ff] p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-blue-600 text-white"><CircleHelp className="size-5" /></span>
+                <div>
+                  <p className="font-bold text-[#101827]">Have another question for this audience?</p>
+                  <p className="mt-1 text-sm text-slate-600">Add your choices and run a fast question-only pass without recomputing the existing signals.</p>
+                </div>
+              </div>
+              <Button onClick={startNewAudienceQuestion} className="shrink-0 rounded-xl bg-[#101827] text-white"><Plus className="size-4" /> Add another question</Button>
+            </div>
+          )}
+
           {audienceSummary && audienceSummary.answered > 0 && (
             <article className="mt-5 overflow-hidden rounded-[26px] border border-black/10 bg-white">
               <div className="flex flex-col gap-4 border-b border-black/10 bg-[#eaf6ff] p-5 sm:flex-row sm:items-start sm:justify-between sm:p-6">
@@ -935,7 +994,7 @@ export default function SignalDashboard() {
                   <h2 className="mt-2 text-xl font-bold tracking-[-0.035em] sm:text-2xl">{audienceSummary.question.prompt}</h2>
                   <p className="mt-2 text-sm text-slate-500">{audienceSummary.relevant.toLocaleString()} relevant opinions · {audienceSummary.notRelevant.toLocaleString()} unclear or unrelated comments excluded</p>
                 </div>
-                {!analyzing && <Button onClick={editAudienceQuestion} variant="outline" className="shrink-0 rounded-xl border-black/15 bg-white">Ask a different question</Button>}
+                {!analyzing && <Button onClick={startNewAudienceQuestion} variant="outline" className="shrink-0 rounded-xl border-black/15 bg-white"><Plus className="size-4" /> Ask another question</Button>}
               </div>
               <div className="grid gap-4 p-5 sm:grid-cols-2 sm:p-6 lg:grid-cols-3">
                 {audienceSummary.options.map((item, index) => (
