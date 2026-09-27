@@ -1,6 +1,40 @@
 import { readSecret } from "@/lib/server-env";
 import type { SignalComment, SignalDataset } from "@/lib/types";
 
+type YouTubeApiError = {
+  error?: {
+    message?: string;
+    errors?: Array<{ reason?: string }>;
+  };
+};
+
+function youtubeErrorMessage(status: number, payload: YouTubeApiError) {
+  const reason = payload.error?.errors?.[0]?.reason;
+
+  switch (reason) {
+    case "commentsDisabled":
+      return "Comments are disabled for this video. Choose a public video whose comments are visible on YouTube, or upload a CSV.";
+    case "quotaExceeded":
+    case "dailyLimitExceeded":
+      return "The YouTube Data API daily quota is exhausted. Wait for the quota to reset, request more quota, or upload a CSV.";
+    case "keyInvalid":
+      return "The YouTube API key is invalid. Create or replace it in Google Cloud, then try again.";
+    case "accessNotConfigured":
+      return "YouTube Data API v3 is not enabled for this Google Cloud project. Enable it, wait a few minutes, then retry.";
+    case "forbidden":
+      return "YouTube cannot access this video's comments. The video may be private, age-restricted, members-only, or otherwise restricted. Try a different public video.";
+    case "videoNotFound":
+      return "YouTube could not find this video. Check the URL and make sure the video is public.";
+    default:
+      if (status === 403) {
+        return payload.error?.message
+          ? `YouTube blocked this import: ${payload.error.message}`
+          : "YouTube blocked this import. Try a public video with comments enabled, or upload a CSV.";
+      }
+      return payload.error?.message ?? "YouTube could not return comments.";
+  }
+}
+
 function extractVideoId(raw: string) {
   try {
     const url = new URL(raw);
@@ -69,13 +103,14 @@ export async function POST(request: Request) {
             };
           };
         }>;
-        error?: { message?: string };
+        error?: YouTubeApiError["error"];
       };
       if (!response.ok) {
-        const message = response.status === 403
-          ? "YouTube quota or permissions blocked this import. Upload a CSV or use the cached showcase."
-          : payload.error?.message ?? "YouTube could not return comments.";
-        return Response.json({ error: message }, { status: response.status });
+        const reason = payload.error?.errors?.[0]?.reason;
+        return Response.json(
+          { error: youtubeErrorMessage(response.status, payload), reason },
+          { status: response.status }
+        );
       }
 
       for (const item of payload.items ?? []) {
