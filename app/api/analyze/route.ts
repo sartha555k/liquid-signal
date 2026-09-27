@@ -6,8 +6,8 @@ import type { AudienceQuestion, ObjectionKey, SignalComment } from "@/lib/types"
 
 const MODEL = "jev-1.13.0";
 const API_URL = "https://api.typesafe.ai/v1/systemone";
-const MAX_BATCH_SIZE = 1_000;
-const REQUEST_CONCURRENCY = 10;
+const MAX_BATCH_SIZE = 25;
+const REQUEST_CONCURRENCY = 6;
 const CACHE_QUERY_CHUNK_SIZE = 50;
 const CACHE_WRITE_CHUNK_SIZE = 25;
 const MAX_JEV_ATTEMPTS = 4;

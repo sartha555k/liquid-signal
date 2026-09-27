@@ -51,8 +51,8 @@ type YouTubeBatchResponse = {
 
 const YOUTUBE_IMPORT_MILESTONE = 10_000;
 const YOUTUBE_BATCH_SIZE = 1000;
-const JEV_BATCH_SIZE = 1_000;
-const JEV_BATCH_CONCURRENCY = 1;
+const JEV_BATCH_SIZE = 25;
+const JEV_BATCH_CONCURRENCY = 6;
 const ANALYSIS_VERSION = "compact-v2";
 
 function normalizeCommentText(text: string) {
