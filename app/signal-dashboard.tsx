@@ -208,6 +208,61 @@ export default function SignalDashboard() {
     unanalyzed: dataset.comments.length - analyzed.length,
   }), [dataset.comments.length, objectionComments.length, intentComments.length, analyzed]);
 
+  const signalSummary = useMemo(() => [
+    {
+      key: "objections" as const,
+      label: "Objections",
+      count: objectionComments.length,
+      share: analyzed.length ? Math.round((objectionComments.length / analyzed.length) * 100) : 0,
+      description: "Concerns or barriers that could stop a purchase",
+      color: "#ff9c78",
+    },
+    {
+      key: "intent" as const,
+      label: "Strong purchase intent",
+      count: intentComments.length,
+      share: strongIntentShare,
+      description: "People showing clear signs they may buy",
+      color: "#dfff58",
+    },
+    {
+      key: "review" as const,
+      label: "Needs review",
+      count: filterCounts.review,
+      share: analyzed.length ? Math.round((filterCounts.review / analyzed.length) * 100) : 0,
+      description: "Uncertain decisions worth checking manually",
+      color: "#ffc857",
+    },
+    {
+      key: "flagged" as const,
+      label: "Spam or abuse",
+      count: filterCounts.flagged,
+      share: analyzed.length ? Math.round((filterCounts.flagged / analyzed.length) * 100) : 0,
+      description: "High-confidence moderation candidates",
+      color: "#ff78b7",
+    },
+  ], [analyzed.length, objectionComments.length, intentComments.length, strongIntentShare, filterCounts.review, filterCounts.flagged]);
+
+  const overviewEvidence = useMemo(() => {
+    const candidates = [
+      objectionComments[0],
+      intentComments.find((comment) => comment.id !== objectionComments[0]?.id),
+      analyzed.find((comment) =>
+        (comment.analysis?.isObjection ?? 0) < .65
+        && (comment.analysis?.purchaseIntent ?? 0) < .75
+        && (comment.analysis?.spam ?? 0) < .95
+        && (comment.analysis?.abuse ?? 0) < .95
+      ),
+    ].filter((comment): comment is SignalComment => Boolean(comment));
+    const unique = [...new Map(candidates.map((comment) => [comment.id, comment])).values()];
+    if (unique.length < 3) {
+      analyzed.forEach((comment) => {
+        if (unique.length < 3 && !unique.some((item) => item.id === comment.id)) unique.push(comment);
+      });
+    }
+    return unique;
+  }, [analyzed, objectionComments, intentComments]);
+
   const visibleComments = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return dataset.comments.filter((comment) => {
@@ -230,7 +285,7 @@ export default function SignalDashboard() {
     ? intentComments
     : signalView === "objections"
       ? objectionComments
-      : analyzed;
+      : overviewEvidence;
 
   function openComments(filter: CommentFilter = "all", category: ObjectionKey | "all" = "all") {
     setCommentFilter(filter);
@@ -242,6 +297,26 @@ export default function SignalDashboard() {
   function changeSignalView(value: string) {
     const next = value as SignalView;
     setSignalView(next);
+  }
+
+  function evidenceMeta(comment: SignalComment) {
+    const analysis = comment.analysis!;
+    if (signalView === "intent") {
+      return { label: "Strong purchase intent", score: `${Math.round(analysis.purchaseIntent * 100)}% intent` };
+    }
+    if (signalView === "objections") {
+      return { label: CATEGORY[analysis.objectionType].label, score: `${Math.round(analysis.objectionConfidence * 100)}% confidence` };
+    }
+    if (analysis.spam >= .95 || analysis.abuse >= .95) {
+      return { label: "Moderation signal", score: `${Math.round(Math.max(analysis.spam, analysis.abuse) * 100)}% confidence` };
+    }
+    if (analysis.purchaseIntent >= .75) {
+      return { label: "Strong purchase intent", score: `${Math.round(analysis.purchaseIntent * 100)}% intent` };
+    }
+    if (analysis.isObjection >= .65) {
+      return { label: CATEGORY[analysis.objectionType].label, score: `${Math.round(analysis.isObjection * 100)}% objection` };
+    }
+    return { label: "General feedback", score: `${Math.round((1 - analysis.isObjection) * 100)}% non-objection` };
   }
 
   useEffect(() => {
@@ -523,12 +598,35 @@ export default function SignalDashboard() {
               <div className="flex items-start justify-between border-b border-white/10 p-5 sm:p-7">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#dfff58]">{signalView === "intent" ? "Purchase signals" : signalView === "objections" ? "Objection focus" : "Signal overview"}</p>
-                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">{signalView === "intent" ? "Who looks ready to buy?" : "What is stopping the sale?"}</h2>
+                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">{signalView === "intent" ? "Who looks ready to buy?" : signalView === "objections" ? "What is stopping the sale?" : "What did Jev find?"}</h2>
                 </div>
-                <Badge className="rounded-full bg-white/10 px-3 text-slate-200 hover:bg-white/10">{signalView === "intent" ? `${intentComments.length} strong signals` : `${objectionComments.length} objections`}</Badge>
+                <Badge className="rounded-full bg-white/10 px-3 text-slate-200 hover:bg-white/10">{signalView === "intent" ? `${intentComments.length} strong signals` : signalView === "objections" ? `${objectionComments.length} objections` : `${analyzed.length} analysed`}</Badge>
               </div>
               <div className="p-5 sm:p-7">
-                {signalView === "intent" && intentComments.length ? (
+                {signalView === "all" ? (
+                  <div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {signalSummary.map((item) => (
+                        <button
+                          key={item.key}
+                          onClick={() => openComments(item.key)}
+                          className="group rounded-2xl border border-white/10 bg-white/[.055] p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/[.09]"
+                        >
+                          <span className="flex items-center justify-between gap-4">
+                            <span className="flex items-center gap-2 text-sm font-semibold"><span className="size-2.5 rounded-full" style={{ backgroundColor: item.color }} />{item.label}</span>
+                            <ArrowUpRight className="size-4 text-slate-500 transition group-hover:text-[#dfff58]" />
+                          </span>
+                          <span className="mt-4 flex items-end gap-2">
+                            <strong className="text-4xl tracking-[-0.055em]">{item.count}</strong>
+                            <span className="pb-1 text-sm font-semibold text-slate-400">{item.share}%</span>
+                          </span>
+                          <span className="mt-2 block text-xs leading-relaxed text-slate-400">{item.description}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-4 text-xs leading-relaxed text-slate-500">Signals can overlap: a purchase-ready comment may also contain an objection that needs answering.</p>
+                  </div>
+                ) : signalView === "intent" && intentComments.length ? (
                   <div className="space-y-3">
                     {intentComments.slice(0, 5).map((comment) => (
                       <button key={comment.id} onClick={() => openComments("intent")} className="flex w-full items-start gap-4 rounded-2xl border border-white/10 bg-white/[.055] p-4 text-left transition hover:bg-white/[.09]">
@@ -577,7 +675,7 @@ export default function SignalDashboard() {
                 <button onClick={() => openComments(signalView === "intent" ? "intent" : signalView === "objections" ? "objections" : "all")} className="mt-7 flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[.055] p-4 text-left transition hover:bg-white/[.09]">
                   <span>
                     <span className="block text-sm font-semibold">Explore comments behind this view</span>
-                    <span className="mt-1 block text-xs text-slate-400">{signalView === "intent" ? `${intentComments.length} strong-intent comments` : `${filterCounts.review} uncertain classifications need review`}</span>
+                    <span className="mt-1 block text-xs text-slate-400">{signalView === "intent" ? `${intentComments.length} strong-intent comments` : signalView === "objections" ? `${objectionComments.length} comments contain objections` : `${analyzed.length} analysed comments across every signal`}</span>
                   </span>
                   <ArrowUpRight className="size-5 text-[#dfff58]" />
                 </button>
@@ -619,8 +717,8 @@ export default function SignalDashboard() {
                 {evidenceComments.slice(0, 3).map((comment) => (
                   <article key={comment.id} className="rounded-2xl border border-black/10 bg-[#f8f7f2] p-4">
                     <div className="flex items-center justify-between gap-2">
-                      <Badge variant="secondary" className="max-w-[70%] truncate rounded-full bg-white text-[11px]">{CATEGORY[comment.analysis!.objectionType].label}</Badge>
-                      <span className="text-[11px] font-semibold text-emerald-700">{signalView === "intent" ? `${Math.round(comment.analysis!.purchaseIntent * 100)}% intent` : `${Math.round(comment.analysis!.objectionConfidence * 100)}% confidence`}</span>
+                      <Badge variant="secondary" className="max-w-[70%] truncate rounded-full bg-white text-[11px]">{evidenceMeta(comment).label}</Badge>
+                      <span className="text-[11px] font-semibold text-emerald-700">{evidenceMeta(comment).score}</span>
                     </div>
                     <p className="mt-4 line-clamp-4 text-sm leading-relaxed text-slate-700">“{comment.text}”</p>
                   </article>
