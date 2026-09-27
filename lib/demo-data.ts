@@ -40,7 +40,7 @@ export const demoDataset: SignalDataset = {
   source: "demo",
   sourceLabel: "Showcase dataset",
   comments,
-  analyzedAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+  analyzedAt: "2026-09-27T10:00:00.000Z",
   model: "jev-1.13.0",
   inputTokens: 97842,
   costUsd: .0041,

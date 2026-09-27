@@ -449,7 +449,9 @@ export default function SignalDashboard() {
             </Tabs>
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 sm:ml-auto">
               <span className={`size-2 rounded-full ${analyzed.length ? "bg-emerald-500" : "bg-amber-500"}`} />
-              {analyzed.length ? `Analysed ${formatTime(dataset.analyzedAt)} · ${analyzed.length.toLocaleString()} comments` : `${dataset.comments.length} comments ready to analyse`}
+              {analyzed.length
+                ? `${dataset.source === "demo" ? "Showcase snapshot" : `Analysed ${formatTime(dataset.analyzedAt)}`} · ${analyzed.length.toLocaleString()} comments`
+                : `${dataset.comments.length} comments ready to analyse`}
             </div>
           </div>
 
