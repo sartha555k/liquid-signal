@@ -35,8 +35,10 @@ export async function POST(request: Request) {
     let pageToken: string | undefined;
     let videoTitle = "YouTube comments";
 
+    const googleHeaders = { "x-goog-api-key": apiKey };
     const videoResponse = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}&key=${encodeURIComponent(apiKey)}`
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,
+      { headers: googleHeaders }
     );
     if (videoResponse.ok) {
       const videoPayload = await videoResponse.json() as { items?: Array<{ snippet?: { title?: string } }> };
@@ -50,11 +52,12 @@ export async function POST(request: Request) {
         maxResults: String(Math.min(100, target - comments.length)),
         textFormat: "plainText",
         order: "relevance",
-        key: apiKey,
       });
       if (pageToken) params.set("pageToken", pageToken);
 
-      const response = await fetch(`https://www.googleapis.com/youtube/v3/commentThreads?${params}`);
+      const response = await fetch(`https://www.googleapis.com/youtube/v3/commentThreads?${params}`, {
+        headers: googleHeaders,
+      });
       const payload = await response.json() as {
         nextPageToken?: string;
         items?: Array<{
