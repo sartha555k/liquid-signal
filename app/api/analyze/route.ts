@@ -3,7 +3,7 @@ import type { ObjectionKey, SignalComment } from "@/lib/types";
 
 const MODEL = "jev-1.13.0";
 const API_URL = "https://api.typesafe.ai/v1/systemone";
-const MAX_COMMENTS = 25;
+const MAX_BATCH_SIZE = 25;
 
 type JevChoice = {
   type: "choice";
@@ -117,7 +117,7 @@ export async function POST(request: Request) {
       );
     }
     const body = await request.json() as { comments?: SignalComment[]; context?: unknown };
-    const comments = (body.comments ?? []).filter((comment) => comment.text?.trim()).slice(0, MAX_COMMENTS);
+    const comments = (body.comments ?? []).filter((comment) => comment.text?.trim()).slice(0, MAX_BATCH_SIZE);
     if (!comments.length) return Response.json({ error: "No comments were provided." }, { status: 400 });
 
     const results: Awaited<ReturnType<typeof classify>>[] = [];
@@ -131,7 +131,7 @@ export async function POST(request: Request) {
       model: results[0]?.model ?? MODEL,
       inputTokens,
       costUsd: Number(((inputTokens / 1_000_000) * .042).toFixed(6)),
-      cap: MAX_COMMENTS,
+      batchSize: MAX_BATCH_SIZE,
     });
   } catch (error) {
     console.error("Jev analysis failed", error);

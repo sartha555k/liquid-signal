@@ -6,11 +6,11 @@ import {
   ArrowRight,
   ArrowUpRight,
   BarChart3,
+  CheckCircle2,
   ChevronDown,
   CircleDot,
   FileUp,
   LayoutDashboard,
-  Loader2,
   MessageSquareText,
   Search,
   Settings2,
@@ -48,6 +48,8 @@ type YouTubeBatchResponse = {
 
 const YOUTUBE_IMPORT_MILESTONE = 10_000;
 const YOUTUBE_BATCH_SIZE = 500;
+const JEV_BATCH_SIZE = 25;
+const JEV_BATCH_CONCURRENCY = 3;
 
 const COMMENT_FILTERS: Array<{ key: CommentFilter; label: string }> = [
   { key: "all", label: "All" },
@@ -179,11 +181,13 @@ export default function SignalDashboard() {
   const [pendingImport, setPendingImport] = useState<YouTubeImportSession | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [analysisCount, setAnalysisCount] = useState(0);
   const [query, setQuery] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const importAbortRef = useRef<AbortController | null>(null);
   const importAbortActionRef = useRef<"use" | "discard">("discard");
   const importSessionRef = useRef<YouTubeImportSession | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
 
   const analyzed = useMemo(
     () => dataset.comments.filter((comment) => comment.analysis),
@@ -415,10 +419,8 @@ export default function SignalDashboard() {
     if (next.comments.length <= 1000) void persistDataset(next);
     setPendingImport(null);
     setYoutubeOpen(false);
-    toast.success(`Imported ${next.comments.length.toLocaleString()} comments`, {
-      description: session.nextPageToken
-        ? "You chose to analyse this newest-comment sample."
-        : "Every available top-level comment was imported.",
+    toast.success(`Import complete — ${next.comments.length.toLocaleString()} comments ready`, {
+      description: "Click Analyse with Jev to classify every imported comment.",
     });
   }
 
@@ -521,59 +523,111 @@ export default function SignalDashboard() {
     };
     setDataset(next);
     void persistDataset(next);
-    toast.success(`Loaded ${comments.length} comments`, { description: "Ready for a capped Jev analysis run." });
+    toast.success(`Imported ${comments.length} comments`, { description: "Import complete. Click Analyse with Jev when you’re ready." });
   }
 
   async function analyzeWithJev() {
     if (analyzing) return;
-    const cap = Math.min(dataset.comments.length, 25);
-    if (!cap) return;
+    const pendingComments = dataset.comments.filter((comment) => !comment.analysis);
+    if (!pendingComments.length) {
+      toast.success("Every comment is already analysed");
+      return;
+    }
+
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    const alreadyAnalyzed = dataset.comments.length - pendingComments.length;
+    let processed = 0;
+    let totalInputTokens = dataset.inputTokens ?? 0;
+    let totalCost = dataset.costUsd ?? 0;
+    let model = dataset.model;
+
     setAnalyzing(true);
-    setAnalysisProgress(12);
-    const timer = window.setInterval(() => setAnalysisProgress((value) => Math.min(88, value + 7)), 450);
+    setAnalysisCount(alreadyAnalyzed);
+    setAnalysisProgress(Math.round((alreadyAnalyzed / dataset.comments.length) * 100));
+
+    const batches: SignalComment[][] = [];
+    for (let index = 0; index < pendingComments.length; index += JEV_BATCH_SIZE) {
+      batches.push(pendingComments.slice(index, index + JEV_BATCH_SIZE));
+    }
+
     try {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          comments: dataset.comments.slice(0, cap),
-          context: { product: dataset.name, source: dataset.source },
-        }),
-      });
-      const payload = await response.json() as {
-        comments?: SignalComment[];
-        model?: string;
-        inputTokens?: number;
-        costUsd?: number;
-        error?: string;
-      };
-      if (!response.ok || !payload.comments) throw new Error(payload.error ?? "Analysis failed");
-      const analyzedById = new Map(payload.comments.map((comment) => [comment.id, comment]));
-      setDataset((current) => {
-        const next = {
+      for (let index = 0; index < batches.length; index += JEV_BATCH_CONCURRENCY) {
+        const wave = batches.slice(index, index + JEV_BATCH_CONCURRENCY);
+        const waveResults = await Promise.allSettled(wave.map(async (comments) => {
+          const response = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              comments,
+              context: { product: dataset.name, source: dataset.source },
+            }),
+            signal: controller.signal,
+          });
+          const payload = await response.json() as {
+            comments?: SignalComment[];
+            model?: string;
+            inputTokens?: number;
+            costUsd?: number;
+            error?: string;
+          };
+          if (!response.ok || !payload.comments) throw new Error(payload.error ?? "Analysis failed");
+          return payload;
+        }));
+        const payloads = waveResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+
+        const completedComments = payloads.flatMap((payload) => payload.comments ?? []);
+        const analyzedById = new Map(completedComments.map((comment) => [comment.id, comment]));
+        processed += completedComments.length;
+        totalInputTokens += payloads.reduce((sum, payload) => sum + (payload.inputTokens ?? 0), 0);
+        totalCost += payloads.reduce((sum, payload) => sum + (payload.costUsd ?? 0), 0);
+        model = payloads.find((payload) => payload.model)?.model ?? model;
+        const completedTotal = alreadyAnalyzed + processed;
+
+        setAnalysisCount(completedTotal);
+        setAnalysisProgress(Math.round((completedTotal / dataset.comments.length) * 100));
+        setDataset((current) => ({
           ...current,
           comments: current.comments.map((comment) => analyzedById.get(comment.id) ?? comment),
           analyzedAt: new Date().toISOString(),
-          model: payload.model,
-          inputTokens: payload.inputTokens,
-          costUsd: payload.costUsd,
-        };
-        void persistDataset(next);
-        return next;
-      });
+          model,
+          inputTokens: totalInputTokens,
+          costUsd: Number(totalCost.toFixed(6)),
+        }));
+
+        const failed = waveResults.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+      }
+
       setAnalysisProgress(100);
-      toast.success(`Analysed ${payload.comments.length} comments with Jev`, {
-        description: `Estimated cost: $${(payload.costUsd ?? 0).toFixed(4)}`,
+      setDataset((current) => {
+        if (current.comments.length <= 1000) void persistDataset(current);
+        return current;
+      });
+      toast.success(`Analysed all ${dataset.comments.length.toLocaleString()} comments with Jev`, {
+        description: `Estimated cost: $${totalCost.toFixed(4)}`,
       });
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        toast.info(`Analysis stopped at ${(alreadyAnalyzed + processed).toLocaleString()} comments`, {
+          description: "Click Resume analysis whenever you’re ready. Completed results are preserved.",
+        });
+        return;
+      }
       toast.error(error instanceof Error ? error.message : "Analysis failed", {
-        description: "The showcase dataset remains available while API credentials are configured.",
+        description: processed
+          ? `${processed.toLocaleString()} new results were saved. Click Resume analysis to continue.`
+          : "No comments were changed. Try again when the API is available.",
       });
     } finally {
-      window.clearInterval(timer);
+      analysisAbortRef.current = null;
       setAnalyzing(false);
-      window.setTimeout(() => setAnalysisProgress(0), 800);
+      window.setTimeout(() => setAnalysisProgress(0), 1200);
     }
+  }
+
+  function stopJevAnalysis() {
+    analysisAbortRef.current?.abort();
   }
 
   return (
@@ -635,12 +689,12 @@ export default function SignalDashboard() {
           </div>
           <div className="mt-auto rounded-2xl bg-[#101827] p-4 text-white">
             <div className="flex items-center justify-between text-xs text-slate-300">
-              <span>Spend guard</span><span>25 / run</span>
+              <span>Protected batching</span><span>25 at a time</span>
             </div>
             <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
               <div className="h-full w-[24%] rounded-full bg-[#dfff58]" />
             </div>
-            <p className="mt-3 text-xs leading-relaxed text-slate-400">Every live run is capped before it can spend your remaining TypeSafe credit.</p>
+            <p className="mt-3 text-xs leading-relaxed text-slate-400">Jev continues through every imported comment in small batches. You can stop and resume without losing completed results.</p>
           </div>
         </aside>
 
@@ -662,21 +716,38 @@ export default function SignalDashboard() {
               <Button onClick={() => setYoutubeOpen(true)} className="h-11 flex-1 rounded-xl bg-[#ff2e2e] px-5 text-white shadow-[0_8px_24px_rgba(255,46,46,.22)] hover:bg-[#e52323] sm:flex-none">
                 <Video className="size-4" /> Import YouTube
               </Button>
-              {dataset.source !== "demo" && (
-                <Button onClick={analyzeWithJev} disabled={analyzing} className="h-11 w-full rounded-xl bg-[#101827] px-5 text-white sm:w-auto">
-                  {analyzing ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4 text-[#dfff58]" />}
-                  {analyzing ? "Analysing…" : "Analyse with Jev"}
-                </Button>
-              )}
             </div>
           </div>
 
-          {analysisProgress > 0 && (
+          {dataset.source !== "demo" && analyzed.length < dataset.comments.length && !analyzing && (
+            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-emerald-700/20 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white"><CheckCircle2 className="size-5" /></span>
+                <div>
+                  <p className="font-bold text-emerald-950">{analyzed.length ? "Analysis paused — your results are saved" : "Import complete"}</p>
+                  <p className="mt-1 text-sm leading-relaxed text-emerald-900/70">
+                    {analyzed.length
+                      ? `${analyzed.length.toLocaleString()} of ${dataset.comments.length.toLocaleString()} comments are analysed. Resume to finish the remaining ${(dataset.comments.length - analyzed.length).toLocaleString()}.`
+                      : `${dataset.comments.length.toLocaleString()} comments are ready. Click Analyse with Jev to classify all of them.`}
+                  </p>
+                </div>
+              </div>
+              <Button onClick={analyzeWithJev} className="h-11 shrink-0 rounded-xl bg-[#101827] px-5 text-white hover:bg-[#1b2638]">
+                <Sparkles className="size-4 text-[#dfff58]" /> {analyzed.length ? "Resume analysis" : "Analyse with Jev"}
+              </Button>
+            </div>
+          )}
+
+          {analyzing && (
             <div className="mt-5 rounded-2xl border border-black/10 bg-white p-4">
-              <div className="mb-2 flex items-center justify-between text-sm font-semibold">
-                <span>Running a protected Jev analysis</span><span>{analysisProgress}%</span>
+              <div className="mb-2 flex items-center justify-between gap-4 text-sm font-semibold">
+                <span>Jev is analysing every imported comment</span><span>{analysisCount.toLocaleString()} / {dataset.comments.length.toLocaleString()}</span>
               </div>
               <Progress value={analysisProgress} className="h-2" />
+              <div className="mt-3 flex items-center justify-between gap-4">
+                <p className="text-xs text-slate-500">Results appear as each protected batch finishes.</p>
+                <Button onClick={stopJevAnalysis} variant="ghost" size="sm" className="rounded-lg text-slate-600"><X className="size-4" /> Stop</Button>
+              </div>
             </div>
           )}
 
@@ -771,7 +842,7 @@ export default function SignalDashboard() {
                     <div>
                       <BarChart3 className="mx-auto size-9 text-slate-500" />
                       <p className="mt-3 font-semibold">Signals will appear here</p>
-                      <p className="mt-1 text-sm text-slate-400">Run the capped Jev analysis to build your objection map.</p>
+                      <p className="mt-1 text-sm text-slate-400">Run Jev analysis to build your objection map.</p>
                     </div>
                   </div>
                 )}
