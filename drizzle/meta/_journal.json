@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1790508367503,
+      "tag": "0000_sleepy_silver_fox",
+      "breakpoints": true
+    }
+  ]
+}
