@@ -29,7 +29,7 @@ const comments = rows.flatMap(([text, type, confidence, intent], rowIndex) =>
       purchaseIntent: intent,
       spam: rowIndex === 10 ? .995 : .01,
       abuse: 0.01,
-      reviewRequired: confidence < .75,
+      reviewRequired: type !== "other" && confidence < .75,
     },
   }))
 );

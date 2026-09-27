@@ -87,17 +87,19 @@ async function classify(comment: SignalComment, context: unknown, apiKey: string
 
   const objection = payload.answers.objection_type;
   const objectionType = objection.choice as ObjectionKey;
+  const objectionLikelihood = payload.answers.is_objection.noul;
   return {
     comment: {
       ...comment,
       analysis: {
-        isObjection: payload.answers.is_objection.noul,
+        isObjection: objectionLikelihood,
         objectionType,
         objectionConfidence: objection.confidence,
         purchaseIntent: Math.max(0, Math.min(1, payload.answers.purchase_intent.score / 3)),
         spam: payload.answers.is_spam.noul,
         abuse: payload.answers.is_abusive.noul,
-        reviewRequired: objection.confidence < .55,
+        reviewRequired: (objectionLikelihood >= .35 && objectionLikelihood < .65)
+          || (objectionLikelihood >= .65 && objection.confidence < .55),
       },
     },
     inputTokens: payload.usage?.input_tokens ?? 0,

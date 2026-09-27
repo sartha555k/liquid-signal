@@ -6,20 +6,16 @@ import {
   ArrowRight,
   ArrowUpRight,
   BarChart3,
-  Check,
   ChevronDown,
   CircleDot,
-  FileSpreadsheet,
   FileUp,
   LayoutDashboard,
   Loader2,
   MessageSquareText,
-  Play,
   Search,
   Settings2,
   ShieldCheck,
   Sparkles,
-  UploadCloud,
   Video,
   X,
 } from "lucide-react";
@@ -34,6 +30,18 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
 import { demoDataset } from "@/lib/demo-data";
 import type { ObjectionKey, SignalComment, SignalDataset } from "@/lib/types";
+
+type SignalView = "all" | "objections" | "intent";
+type CommentFilter = "all" | "objections" | "intent" | "review" | "flagged" | "unanalyzed";
+
+const COMMENT_FILTERS: Array<{ key: CommentFilter; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "objections", label: "Objections" },
+  { key: "intent", label: "High intent" },
+  { key: "review", label: "Needs review" },
+  { key: "flagged", label: "Spam / abuse" },
+  { key: "unanalyzed", label: "Not analysed" },
+];
 
 const CATEGORY: Record<ObjectionKey, { label: string; color: string; hook: string }> = {
   sensitive_skin_safety: {
@@ -142,6 +150,9 @@ async function persistDataset(dataset: SignalDataset) {
 
 export default function SignalDashboard() {
   const [dataset, setDataset] = useState<SignalDataset>(demoDataset);
+  const [signalView, setSignalView] = useState<SignalView>("all");
+  const [commentFilter, setCommentFilter] = useState<CommentFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<ObjectionKey | "all">("all");
   const [youtubeOpen, setYoutubeOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [briefOpen, setBriefOpen] = useState(false);
@@ -162,6 +173,11 @@ export default function SignalDashboard() {
     [analyzed]
   );
 
+  const intentComments = useMemo(
+    () => analyzed.filter((comment) => (comment.analysis?.purchaseIntent ?? 0) >= .75),
+    [analyzed]
+  );
+
   const ranked = useMemo(() => {
     const counts = new Map<ObjectionKey, number>();
     objectionComments.forEach((comment) => {
@@ -178,19 +194,66 @@ export default function SignalDashboard() {
       .sort((a, b) => b.count - a.count);
   }, [objectionComments]);
 
-  const strongIntent = analyzed.filter((comment) => (comment.analysis?.purchaseIntent ?? 0) >= .75).length;
+  const strongIntent = intentComments.length;
   const strongIntentShare = analyzed.length ? Math.round((strongIntent / analyzed.length) * 100) : 0;
   const flagged = analyzed.filter((comment) => (comment.analysis?.spam ?? 0) >= .95 || (comment.analysis?.abuse ?? 0) >= .95).length;
   const top = ranked[0] ?? { key: "other" as const, label: "No dominant objection", hook: "Your next hook will appear after analysis", value: 0, count: 0, color: "#94a3b8" };
 
+  const filterCounts = useMemo(() => ({
+    all: dataset.comments.length,
+    objections: objectionComments.length,
+    intent: intentComments.length,
+    review: analyzed.filter((comment) => comment.analysis?.reviewRequired).length,
+    flagged: analyzed.filter((comment) => (comment.analysis?.spam ?? 0) >= .95 || (comment.analysis?.abuse ?? 0) >= .95).length,
+    unanalyzed: dataset.comments.length - analyzed.length,
+  }), [dataset.comments.length, objectionComments.length, intentComments.length, analyzed]);
+
   const visibleComments = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return dataset.comments;
-    return dataset.comments.filter((comment) =>
-      comment.text.toLowerCase().includes(normalized) ||
-      (comment.analysis && CATEGORY[comment.analysis.objectionType].label.toLowerCase().includes(normalized))
-    );
-  }, [dataset.comments, query]);
+    return dataset.comments.filter((comment) => {
+      const analysis = comment.analysis;
+      const matchesFilter = commentFilter === "all"
+        || (commentFilter === "objections" && (analysis?.isObjection ?? 0) >= .65)
+        || (commentFilter === "intent" && (analysis?.purchaseIntent ?? 0) >= .75)
+        || (commentFilter === "review" && analysis?.reviewRequired)
+        || (commentFilter === "flagged" && ((analysis?.spam ?? 0) >= .95 || (analysis?.abuse ?? 0) >= .95))
+        || (commentFilter === "unanalyzed" && !analysis);
+      const matchesCategory = categoryFilter === "all" || analysis?.objectionType === categoryFilter;
+      const matchesQuery = !normalized
+        || comment.text.toLowerCase().includes(normalized)
+        || (analysis && CATEGORY[analysis.objectionType].label.toLowerCase().includes(normalized));
+      return matchesFilter && matchesCategory && matchesQuery;
+    });
+  }, [dataset.comments, query, commentFilter, categoryFilter]);
+
+  const evidenceComments = signalView === "intent"
+    ? intentComments
+    : signalView === "objections"
+      ? objectionComments
+      : analyzed;
+
+  function openComments(filter: CommentFilter = "all", category: ObjectionKey | "all" = "all") {
+    setCommentFilter(filter);
+    setCategoryFilter(category);
+    setQuery("");
+    setCommentsOpen(true);
+  }
+
+  function changeSignalView(value: string) {
+    const next = value as SignalView;
+    setSignalView(next);
+  }
+
+  useEffect(() => {
+    function onShortcut(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        openComments();
+      }
+    }
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, []);
 
   useEffect(() => {
     const context = document.modelContext;
@@ -354,7 +417,7 @@ export default function SignalDashboard() {
             <span className="text-[17px] font-black tracking-[-0.04em]">Jev Signal</span>
           </a>
           <button
-            onClick={() => setCommentsOpen(true)}
+            onClick={() => openComments()}
             className="ml-auto hidden w-full max-w-sm items-center gap-2 rounded-full border border-black/10 bg-white/70 px-3 py-2 text-left md:flex"
           >
             <Search className="size-4 text-slate-400" />
@@ -376,7 +439,7 @@ export default function SignalDashboard() {
             <a className="flex items-center gap-3 rounded-xl bg-[#101827] px-3 py-2.5 text-sm font-semibold text-white" href="#overview">
               <LayoutDashboard className="size-4 text-[#dfff58]" /> Overview
             </a>
-            <button onClick={() => setCommentsOpen(true)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-600 hover:bg-black/5">
+            <button onClick={() => openComments()} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-600 hover:bg-black/5">
               <MessageSquareText className="size-4" /> Comments
               <span className="ml-auto text-xs text-slate-400">{dataset.comments.length.toLocaleString()}</span>
             </button>
@@ -440,11 +503,11 @@ export default function SignalDashboard() {
           )}
 
           <div className="mt-7 flex flex-col gap-4 rounded-2xl border border-black/10 bg-white/60 p-3 sm:flex-row sm:items-center">
-            <Tabs defaultValue="all" className="w-full sm:w-auto">
+            <Tabs value={signalView} onValueChange={changeSignalView} className="w-full sm:w-auto">
               <TabsList className="h-10 w-full rounded-xl bg-black/[.055] p-1 sm:w-auto">
-                <TabsTrigger value="all" className="rounded-lg px-4">All signals</TabsTrigger>
-                <TabsTrigger value="objections" className="rounded-lg px-4">Objections</TabsTrigger>
-                <TabsTrigger value="intent" className="rounded-lg px-4">Purchase intent</TabsTrigger>
+                <TabsTrigger value="all" className="rounded-lg px-4">All signals <span className="ml-1.5 text-[10px] opacity-55">{analyzed.length}</span></TabsTrigger>
+                <TabsTrigger value="objections" className="rounded-lg px-4">Objections <span className="ml-1.5 text-[10px] opacity-55">{objectionComments.length}</span></TabsTrigger>
+                <TabsTrigger value="intent" className="rounded-lg px-4">Purchase intent <span className="ml-1.5 text-[10px] opacity-55">{intentComments.length}</span></TabsTrigger>
               </TabsList>
             </Tabs>
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 sm:ml-auto">
@@ -459,16 +522,36 @@ export default function SignalDashboard() {
             <article className="overflow-hidden rounded-[26px] bg-[#101827] text-white shadow-[0_20px_60px_rgba(16,24,39,.14)]">
               <div className="flex items-start justify-between border-b border-white/10 p-5 sm:p-7">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#dfff58]">Objection map</p>
-                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">What is stopping the sale?</h2>
+                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#dfff58]">{signalView === "intent" ? "Purchase signals" : signalView === "objections" ? "Objection focus" : "Signal overview"}</p>
+                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">{signalView === "intent" ? "Who looks ready to buy?" : "What is stopping the sale?"}</h2>
                 </div>
-                <Badge className="rounded-full bg-white/10 px-3 text-slate-200 hover:bg-white/10">{objectionComments.length} objections</Badge>
+                <Badge className="rounded-full bg-white/10 px-3 text-slate-200 hover:bg-white/10">{signalView === "intent" ? `${intentComments.length} strong signals` : `${objectionComments.length} objections`}</Badge>
               </div>
               <div className="p-5 sm:p-7">
-                {ranked.length ? (
+                {signalView === "intent" && intentComments.length ? (
+                  <div className="space-y-3">
+                    {intentComments.slice(0, 5).map((comment) => (
+                      <button key={comment.id} onClick={() => openComments("intent")} className="flex w-full items-start gap-4 rounded-2xl border border-white/10 bg-white/[.055] p-4 text-left transition hover:bg-white/[.09]">
+                        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#dfff58] text-sm font-black text-[#101827]">{Math.round(comment.analysis!.purchaseIntent * 100)}</span>
+                        <span className="min-w-0">
+                          <span className="line-clamp-2 block text-sm leading-relaxed text-slate-100">“{comment.text}”</span>
+                          <span className="mt-1.5 block text-xs text-slate-400">Strong purchase intent · {Math.round(comment.analysis!.purchaseIntent * 100)}% score</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : signalView === "intent" ? (
+                  <div className="grid min-h-64 place-items-center text-center">
+                    <div>
+                      <CircleDot className="mx-auto size-9 text-slate-500" />
+                      <p className="mt-3 font-semibold">No strong purchase intent found</p>
+                      <p className="mx-auto mt-1 max-w-sm text-sm text-slate-400">None of the analysed comments crossed the 75% strong-intent threshold. This is a valid result, not a loading error.</p>
+                    </div>
+                  </div>
+                ) : ranked.length ? (
                   <div className="space-y-6">
                     {ranked.slice(0, 5).map((item, index) => (
-                      <button key={item.key} onClick={() => { setQuery(item.label); setCommentsOpen(true); }} className="block w-full text-left">
+                      <button key={item.key} onClick={() => openComments("objections", item.key)} className="block w-full text-left">
                         <div className="mb-2.5 flex items-end justify-between gap-4">
                           <div className="flex items-center gap-3">
                             <span className="text-xs font-bold text-slate-500">0{index + 1}</span>
@@ -491,10 +574,10 @@ export default function SignalDashboard() {
                     </div>
                   </div>
                 )}
-                <button onClick={() => setCommentsOpen(true)} className="mt-7 flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[.055] p-4 text-left transition hover:bg-white/[.09]">
+                <button onClick={() => openComments(signalView === "intent" ? "intent" : signalView === "objections" ? "objections" : "all")} className="mt-7 flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[.055] p-4 text-left transition hover:bg-white/[.09]">
                   <span>
-                    <span className="block text-sm font-semibold">Explore comments behind every signal</span>
-                    <span className="mt-1 block text-xs text-slate-400">{analyzed.filter((comment) => comment.analysis?.reviewRequired).length} uncertain classifications need review</span>
+                    <span className="block text-sm font-semibold">Explore comments behind this view</span>
+                    <span className="mt-1 block text-xs text-slate-400">{signalView === "intent" ? `${intentComments.length} strong-intent comments` : `${filterCounts.review} uncertain classifications need review`}</span>
                   </span>
                   <ArrowUpRight className="size-5 text-[#dfff58]" />
                 </button>
@@ -502,14 +585,15 @@ export default function SignalDashboard() {
             </article>
 
             <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-1">
-              <article className="rounded-[26px] border border-black/10 bg-[#dfff58] p-6">
+              <button onClick={() => openComments("intent")} className="rounded-[26px] border border-black/10 bg-[#dfff58] p-6 text-left transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#101827]">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-black uppercase tracking-[0.12em]">Strong purchase intent</p>
-                  <Play className="size-4" fill="currentColor" />
+                  <ArrowUpRight className="size-4" />
                 </div>
                 <p className="mt-7 text-6xl font-black tracking-[-0.07em]">{strongIntentShare}%</p>
                 <p className="mt-2 max-w-xs text-sm font-medium leading-relaxed text-[#34400d]">{strongIntent} people asked where to buy, requested a link, or showed clear intent to try it.</p>
-              </article>
+                <span className="mt-4 block text-xs font-bold text-[#34400d]">View purchase-ready comments →</span>
+              </button>
               <article className="rounded-[26px] border border-black/10 bg-white p-6">
                 <div className="flex items-center gap-2">
                   <span className="grid size-8 place-items-center rounded-full bg-[#101827] text-[#dfff58]"><Sparkles className="size-4" /></span>
@@ -529,18 +613,19 @@ export default function SignalDashboard() {
                   <p className="text-xs font-bold uppercase tracking-[0.13em] text-slate-400">Evidence</p>
                   <h2 className="mt-1 text-xl font-bold tracking-[-0.035em]">Comments behind the signal</h2>
                 </div>
-                <Button onClick={() => setCommentsOpen(true)} variant="ghost" className="justify-start rounded-xl text-slate-600 sm:justify-center">View all comments <ArrowUpRight className="size-4" /></Button>
+                <Button onClick={() => openComments(signalView === "intent" ? "intent" : signalView === "objections" ? "objections" : "all")} variant="ghost" className="justify-start rounded-xl text-slate-600 sm:justify-center">View matching comments <ArrowUpRight className="size-4" /></Button>
               </div>
               <div className="mt-5 grid gap-3 md:grid-cols-3">
-                {objectionComments.slice(0, 3).map((comment) => (
+                {evidenceComments.slice(0, 3).map((comment) => (
                   <article key={comment.id} className="rounded-2xl border border-black/10 bg-[#f8f7f2] p-4">
                     <div className="flex items-center justify-between gap-2">
                       <Badge variant="secondary" className="max-w-[70%] truncate rounded-full bg-white text-[11px]">{CATEGORY[comment.analysis!.objectionType].label}</Badge>
-                      <span className="text-[11px] font-semibold text-emerald-700">{Math.round(comment.analysis!.objectionConfidence * 100)}%</span>
+                      <span className="text-[11px] font-semibold text-emerald-700">{signalView === "intent" ? `${Math.round(comment.analysis!.purchaseIntent * 100)}% intent` : `${Math.round(comment.analysis!.objectionConfidence * 100)}% confidence`}</span>
                     </div>
                     <p className="mt-4 line-clamp-4 text-sm leading-relaxed text-slate-700">“{comment.text}”</p>
                   </article>
                 ))}
+                {!evidenceComments.length && <p className="col-span-full rounded-2xl border border-dashed border-black/15 p-8 text-center text-sm text-slate-500">No comments match this signal view yet.</p>}
               </div>
             </section>
             <aside className="rounded-[26px] border border-black/10 bg-[#ffebe5] p-6">
@@ -585,34 +670,77 @@ export default function SignalDashboard() {
       </Dialog>
 
       <Dialog open={commentsOpen} onOpenChange={setCommentsOpen}>
-        <DialogContent className="max-h-[88vh] max-w-3xl overflow-hidden rounded-[26px] border-black/10 p-0">
+        <DialogContent className="max-h-[90vh] overflow-hidden rounded-[26px] border-black/10 p-0 sm:max-w-4xl">
           <div className="border-b border-black/10 bg-[#f3f1e9] p-6">
             <DialogHeader className="text-left">
               <DialogTitle className="text-2xl font-black tracking-[-0.04em]">Comment evidence</DialogTitle>
-              <DialogDescription>{visibleComments.length} of {dataset.comments.length} comments · identities omitted</DialogDescription>
+              <DialogDescription>{visibleComments.length} matching · {analyzed.length} analysed · {dataset.comments.length} total · identities omitted</DialogDescription>
             </DialogHeader>
             <div className="mt-5 flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3">
               <Search className="size-4 text-slate-400" />
               <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search text or objection type…" className="h-11 border-0 px-0 shadow-none focus-visible:ring-0" />
               {query && <Button onClick={() => setQuery("")} variant="ghost" size="icon" className="size-8 rounded-lg"><X className="size-4" /></Button>}
             </div>
+            <div className="mt-3 flex flex-col gap-3">
+              <div className="flex min-w-0 flex-wrap gap-2">
+                {COMMENT_FILTERS.map((filter) => (
+                  <button
+                    key={filter.key}
+                    onClick={() => setCommentFilter(filter.key)}
+                    className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold transition ${commentFilter === filter.key ? "border-[#101827] bg-[#101827] text-white" : "border-black/10 bg-white text-slate-600 hover:border-black/25"}`}
+                  >
+                    {filter.label} <span className={commentFilter === filter.key ? "text-[#dfff58]" : "text-slate-400"}>{filterCounts[filter.key]}</span>
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                Type
+                <select
+                  value={categoryFilter}
+                  onChange={(event) => setCategoryFilter(event.target.value as ObjectionKey | "all")}
+                  className="h-9 rounded-xl border border-black/10 bg-white px-3 text-xs font-semibold text-slate-700 outline-none focus:border-black/30"
+                  aria-label="Filter by objection type"
+                >
+                  <option value="all">All categories</option>
+                  {Object.entries(CATEGORY).map(([key, category]) => <option key={key} value={key}>{category.label}</option>)}
+                </select>
+              </label>
+            </div>
           </div>
-          <div className="max-h-[58vh] space-y-3 overflow-y-auto p-5">
+          <div className="min-w-0 max-h-[58vh] space-y-3 overflow-y-auto p-5">
             {visibleComments.slice(0, 100).map((comment) => (
-              <article key={comment.id} className="rounded-2xl border border-black/10 p-4">
-                <p className="text-sm leading-relaxed text-slate-700">“{comment.text}”</p>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
+              <article key={comment.id} className="min-w-0 overflow-hidden rounded-2xl border border-black/10 p-4">
+                <p className="break-words text-sm leading-relaxed text-slate-700">“{comment.text}”</p>
+                <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-black/[.07] pt-3">
                   {comment.analysis ? (
                     <>
                       <Badge variant="secondary" className="rounded-full">{CATEGORY[comment.analysis.objectionType].label}</Badge>
-                      <span className="text-xs text-slate-400">{Math.round(comment.analysis.isObjection * 100)}% objection</span>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">Objection {Math.round(comment.analysis.isObjection * 100)}%</span>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">Type confidence {Math.round(comment.analysis.objectionConfidence * 100)}%</span>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">Purchase intent {Math.round(comment.analysis.purchaseIntent * 100)}%</span>
                       {comment.analysis.purchaseIntent >= .75 && <Badge className="rounded-full bg-[#dfff58] text-[#101827] hover:bg-[#dfff58]">High intent</Badge>}
                       {comment.analysis.spam >= .95 && <Badge variant="destructive" className="rounded-full">Likely spam</Badge>}
+                      {comment.analysis.abuse >= .95 && <Badge variant="destructive" className="rounded-full">Likely abuse</Badge>}
+                      {comment.analysis.reviewRequired && <Badge variant="outline" className="rounded-full border-amber-400 bg-amber-50 text-amber-800">Needs review</Badge>}
                     </>
                   ) : <Badge variant="outline" className="rounded-full">Not analysed</Badge>}
                 </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                  <span>Source: {comment.source === "youtube" ? "YouTube" : comment.source === "csv" ? "CSV" : "Showcase"}</span>
+                  {comment.publishedAt && <span>Published {new Date(comment.publishedAt).toLocaleDateString("en", { day: "numeric", month: "short", year: "numeric" })}</span>}
+                  {comment.sourceId && <span>Reference {comment.sourceId.slice(0, 12)}</span>}
+                </div>
               </article>
             ))}
+            {!visibleComments.length && (
+              <div className="grid min-h-48 place-items-center rounded-2xl border border-dashed border-black/15 text-center">
+                <div>
+                  <Search className="mx-auto size-8 text-slate-300" />
+                  <p className="mt-3 font-semibold">No comments match these filters</p>
+                  <button onClick={() => { setQuery(""); setCommentFilter("all"); setCategoryFilter("all"); }} className="mt-2 text-sm font-bold text-blue-700 hover:underline">Clear all filters</button>
+                </div>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>
