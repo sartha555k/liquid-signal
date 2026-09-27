@@ -1,5 +1,5 @@
 import { readSecret } from "@/lib/server-env";
-import type { SignalComment, SignalDataset } from "@/lib/types";
+import type { SignalComment } from "@/lib/types";
 
 type YouTubeApiError = {
   error?: {
@@ -52,7 +52,11 @@ function extractVideoId(raw: string) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as { url?: string; maxResults?: number };
+    const body = await request.json() as {
+      url?: string;
+      pageToken?: string;
+      batchSize?: number;
+    };
     const videoId = extractVideoId(body.url ?? "");
     if (!videoId) return Response.json({ error: "Enter a valid YouTube video URL." }, { status: 400 });
 
@@ -64,19 +68,24 @@ export async function POST(request: Request) {
       );
     }
 
-    const target = Math.min(Math.max(body.maxResults ?? 100, 1), 200);
+    // A browser import asks for several small batches instead of keeping one
+    // server request alive while a large video is paginated. YouTube itself
+    // allows at most 100 comment threads per page.
+    const target = Math.min(Math.max(body.batchSize ?? 500, 1), 500);
     const comments: SignalComment[] = [];
-    let pageToken: string | undefined;
-    let videoTitle = "YouTube comments";
+    let pageToken = body.pageToken?.trim() || undefined;
+    let videoTitle: string | undefined;
 
     const googleHeaders = { "x-goog-api-key": apiKey };
-    const videoResponse = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,
-      { headers: googleHeaders }
-    );
-    if (videoResponse.ok) {
-      const videoPayload = await videoResponse.json() as { items?: Array<{ snippet?: { title?: string } }> };
-      videoTitle = videoPayload.items?.[0]?.snippet?.title ?? videoTitle;
+    if (!pageToken) {
+      const videoResponse = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,
+        { headers: googleHeaders }
+      );
+      if (videoResponse.ok) {
+        const videoPayload = await videoResponse.json() as { items?: Array<{ snippet?: { title?: string } }> };
+        videoTitle = videoPayload.items?.[0]?.snippet?.title;
+      }
     }
 
     while (comments.length < target) {
@@ -85,7 +94,7 @@ export async function POST(request: Request) {
         videoId,
         maxResults: String(Math.min(100, target - comments.length)),
         textFormat: "plainText",
-        order: "relevance",
+        order: "time",
       });
       if (pageToken) params.set("pageToken", pageToken);
 
@@ -129,14 +138,13 @@ export async function POST(request: Request) {
       if (!pageToken) break;
     }
 
-    const dataset: SignalDataset = {
-      id: crypto.randomUUID(),
-      name: videoTitle,
-      source: "youtube",
-      sourceLabel: "Live YouTube import",
+    return Response.json({
+      videoId,
+      videoTitle,
       comments,
-    };
-    return Response.json({ dataset });
+      nextPageToken: pageToken ?? null,
+      exhausted: !pageToken,
+    });
   } catch (error) {
     console.error("YouTube import failed", error);
     return Response.json({ error: "The YouTube import could not be completed." }, { status: 500 });

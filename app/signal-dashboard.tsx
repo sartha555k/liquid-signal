@@ -33,6 +33,21 @@ import type { ObjectionKey, SignalComment, SignalDataset } from "@/lib/types";
 
 type SignalView = "all" | "objections" | "intent";
 type CommentFilter = "all" | "objections" | "intent" | "review" | "flagged" | "unanalyzed";
+type YouTubeImportSession = {
+  comments: SignalComment[];
+  nextPageToken: string | null;
+  videoTitle: string;
+};
+
+type YouTubeBatchResponse = {
+  videoTitle?: string;
+  comments?: SignalComment[];
+  nextPageToken?: string | null;
+  error?: string;
+};
+
+const YOUTUBE_IMPORT_MILESTONE = 10_000;
+const YOUTUBE_BATCH_SIZE = 500;
 
 const COMMENT_FILTERS: Array<{ key: CommentFilter; label: string }> = [
   { key: "all", label: "All" },
@@ -158,10 +173,17 @@ export default function SignalDashboard() {
   const [briefOpen, setBriefOpen] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [importing, setImporting] = useState(false);
+  const [importCount, setImportCount] = useState(0);
+  const [importGoal, setImportGoal] = useState(YOUTUBE_IMPORT_MILESTONE);
+  const [importTitle, setImportTitle] = useState("");
+  const [pendingImport, setPendingImport] = useState<YouTubeImportSession | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [query, setQuery] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const importAbortRef = useRef<AbortController | null>(null);
+  const importAbortActionRef = useRef<"use" | "discard">("discard");
+  const importSessionRef = useRef<YouTubeImportSession | null>(null);
 
   const analyzed = useMemo(
     () => dataset.comments.filter((comment) => comment.analysis),
@@ -378,28 +400,109 @@ export default function SignalDashboard() {
     return () => lifecycle.abort();
   }, [dataset, analyzed.length, ranked, strongIntentShare]);
 
-  async function importYouTube() {
-    if (!youtubeUrl.trim()) return;
+  function finishYouTubeImport(session: YouTubeImportSession) {
+    if (!session.comments.length) return;
+    const next: SignalDataset = {
+      id: crypto.randomUUID(),
+      name: session.videoTitle,
+      source: "youtube",
+      sourceLabel: "Newest YouTube comments",
+      comments: session.comments,
+    };
+    setDataset(next);
+    // The database cache is deliberately kept small for this proof of concept.
+    // Large live imports remain available in the current browser session.
+    if (next.comments.length <= 1000) void persistDataset(next);
+    setPendingImport(null);
+    setYoutubeOpen(false);
+    toast.success(`Imported ${next.comments.length.toLocaleString()} comments`, {
+      description: session.nextPageToken
+        ? "You chose to analyse this newest-comment sample."
+        : "Every available top-level comment was imported.",
+    });
+  }
+
+  async function importYouTube(resume?: YouTubeImportSession) {
+    if (!youtubeUrl.trim() || importing) return;
+
+    const controller = new AbortController();
+    importAbortRef.current = controller;
+    importAbortActionRef.current = "discard";
+    const startingComments = resume?.comments ?? [];
+    let session: YouTubeImportSession = {
+      comments: [...startingComments],
+      nextPageToken: resume?.nextPageToken ?? null,
+      videoTitle: resume?.videoTitle ?? "YouTube comments",
+    };
+    const target = (Math.floor(startingComments.length / YOUTUBE_IMPORT_MILESTONE) + 1) * YOUTUBE_IMPORT_MILESTONE;
+
+    importSessionRef.current = session;
+    setPendingImport(null);
     setImporting(true);
+    setImportCount(session.comments.length);
+    setImportGoal(target);
+    setImportTitle(session.videoTitle === "YouTube comments" ? "Reading newest comments…" : session.videoTitle);
+
     try {
-      const response = await fetch("/api/youtube", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: youtubeUrl, maxResults: 100 }),
-      });
-      const payload = await response.json() as { dataset?: SignalDataset; error?: string };
-      if (!response.ok || !payload.dataset) throw new Error(payload.error ?? "YouTube import failed");
-      setDataset(payload.dataset);
-      void persistDataset(payload.dataset);
-      setYoutubeOpen(false);
-      toast.success(`Imported ${payload.dataset.comments.length} comments`);
+      while (session.comments.length < target) {
+        const response = await fetch("/api/youtube", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: youtubeUrl,
+            pageToken: session.nextPageToken || undefined,
+            batchSize: Math.min(YOUTUBE_BATCH_SIZE, target - session.comments.length),
+          }),
+          signal: controller.signal,
+        });
+        const payload = await response.json() as YouTubeBatchResponse;
+        if (!response.ok || !payload.comments) throw new Error(payload.error ?? "YouTube import failed");
+
+        const knownIds = new Set(session.comments.map((comment) => comment.sourceId).filter(Boolean));
+        const uniqueComments = payload.comments.filter((comment) => !comment.sourceId || !knownIds.has(comment.sourceId));
+        session = {
+          comments: [...session.comments, ...uniqueComments],
+          nextPageToken: payload.nextPageToken ?? null,
+          videoTitle: payload.videoTitle ?? session.videoTitle,
+        };
+        importSessionRef.current = session;
+        setImportCount(session.comments.length);
+        setImportTitle(session.videoTitle);
+
+        if (!session.nextPageToken) {
+          finishYouTubeImport(session);
+          return;
+        }
+      }
+
+      setPendingImport(session);
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        const partial = importSessionRef.current;
+        if (importAbortActionRef.current === "use" && partial?.comments.length) finishYouTubeImport(partial);
+        return;
+      }
       toast.error(error instanceof Error ? error.message : "YouTube import failed", {
         description: "You can continue with a CSV or the showcase dataset.",
       });
     } finally {
+      importAbortRef.current = null;
       setImporting(false);
     }
+  }
+
+  function stopYouTubeImport() {
+    importAbortActionRef.current = "use";
+    importAbortRef.current?.abort();
+  }
+
+  function changeYoutubeDialog(open: boolean) {
+    if (!open && importing) {
+      importAbortActionRef.current = "discard";
+      importAbortRef.current?.abort();
+    }
+    setYoutubeOpen(open);
+    if (!open) setPendingImport(null);
   }
 
   async function onCsv(file?: File) {
@@ -741,28 +844,67 @@ export default function SignalDashboard() {
         </section>
       </div>
 
-      <Dialog open={youtubeOpen} onOpenChange={setYoutubeOpen}>
+      <Dialog open={youtubeOpen} onOpenChange={changeYoutubeDialog}>
         <DialogContent className="max-w-lg rounded-[26px] border-black/10 bg-[#f8f7f2] p-0">
           <div className="rounded-t-[25px] bg-[#ff2e2e] p-6 text-white">
             <div className="grid size-11 place-items-center rounded-2xl bg-white/15"><Video className="size-5" /></div>
             <DialogHeader className="mt-5 text-left">
               <DialogTitle className="text-2xl font-black tracking-[-0.04em]">Import YouTube comments</DialogTitle>
-              <DialogDescription className="text-white/75">Paste a public video URL. We’ll fetch up to 100 top-level comments and cache the dataset.</DialogDescription>
+              <DialogDescription className="text-white/75">Paste a public video URL. We’ll page through its newest top-level comments and pause every 10,000.</DialogDescription>
             </DialogHeader>
           </div>
           <div className="space-y-5 p-6">
             <div className="space-y-2">
               <Label htmlFor="youtube-url">YouTube video URL</Label>
-              <Input id="youtube-url" value={youtubeUrl} onChange={(event) => setYoutubeUrl(event.target.value)} placeholder="https://youtube.com/watch?v=…" className="h-12 rounded-xl bg-white" />
+              <Input id="youtube-url" value={youtubeUrl} onChange={(event) => setYoutubeUrl(event.target.value)} disabled={importing || Boolean(pendingImport)} placeholder="https://youtube.com/watch?v=…" className="h-12 rounded-xl bg-white" />
             </div>
+            {(importing || pendingImport) && (
+              <div className="rounded-2xl border border-black/10 bg-white p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-[#101827]">{importTitle || pendingImport?.videoTitle}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {importing
+                        ? `${importCount.toLocaleString()} newest comments imported`
+                        : `${pendingImport?.comments.length.toLocaleString()} comments ready`}
+                    </p>
+                  </div>
+                  <Badge className="shrink-0 rounded-full bg-[#101827] text-[#dfff58] hover:bg-[#101827]">
+                    {Math.min(100, Math.round((importCount / importGoal) * 100))}%
+                  </Badge>
+                </div>
+                <Progress value={Math.min(100, (importCount / importGoal) * 100)} className="mt-4 h-2" />
+                <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                  Newest first · about one YouTube quota unit per 100 comments · duplicates removed
+                </p>
+              </div>
+            )}
+            {pendingImport && (
+              <div className="rounded-2xl border border-[#b7cf38] bg-[#f4ffc4] p-4">
+                <p className="font-bold text-[#253000]">Do you want to import more comments?</p>
+                <p className="mt-1.5 text-sm leading-relaxed text-[#526014]">
+                  We have taken the first fresh new {pendingImport.comments.length.toLocaleString()} comments into consideration.
+                </p>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  <Button onClick={() => finishYouTubeImport(pendingImport)} variant="outline" className="rounded-xl border-black/15 bg-white">
+                    Use these comments
+                  </Button>
+                  <Button onClick={() => importYouTube(pendingImport)} className="rounded-xl bg-[#101827] text-white">
+                    Import 10,000 more <ArrowRight className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
             <div className="flex items-start gap-3 rounded-xl border border-black/10 bg-white p-3 text-sm text-slate-600">
               <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-              Public comment text is imported without profile images. A quota error never removes your cached or CSV data.
+              Public comment text is imported without profile images. Only top-level comments are included in this proof of concept.
             </div>
-            <Button onClick={importYouTube} disabled={importing || !youtubeUrl.trim()} className="h-12 w-full rounded-xl bg-[#101827]">
-              {importing ? <Loader2 className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
-              {importing ? "Importing comments…" : "Import comments"}
-            </Button>
+            {!pendingImport && (
+              <Button onClick={importing ? stopYouTubeImport : () => importYouTube()} disabled={!youtubeUrl.trim()} variant={importing ? "outline" : "default"} className="h-12 w-full rounded-xl border-black/15 bg-[#101827] text-white hover:bg-[#1b2638]">
+                {importing ? <X className="size-4" /> : <ArrowRight className="size-4" />}
+                {importing ? "Stop and use imported comments" : "Import newest comments"}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
