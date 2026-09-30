@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: liquid-signal
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build:render
+    startCommand: npm run start:render
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: DEPLOY_TARGET
+        value: render
+      - key: OPENAI_MODEL
+        value: gpt-5-mini
