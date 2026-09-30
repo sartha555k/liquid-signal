@@ -1,11 +1,14 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "liquid-signal-backend",
   "version": "0.1.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
+    "db:local": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local --config wrangler.local.json --persist-to .wrangler/state",
+    "test:liquid": "node --test scripts/test-liquid-decisions.mjs",
+    "test:liquid:live": "node scripts/smoke-liquid.mjs",
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "node scripts/run-framework.mjs dev",
     "build": "node scripts/run-framework.mjs build",

@@ -1,4 +1,8 @@
-# vinext-starter
+# Liquid Signal backend
+
+This is the separate `liquid-d1` build. See [Liquid build setup](LIQUID-BUILD.md) for the server keys, extension install path and local startup instructions. It uses Liquid `d1:free` for classification and OpenAI for suggestions and summaries. The existing Jev deployment is unchanged.
+
+The framework starter reference follows.
 
 A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
 

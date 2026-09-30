@@ -104,7 +104,7 @@ export async function POST(request: Request) {
         reasoning: { effort: "minimal" },
         max_output_tokens: 640,
         instructions: [
-          "You are the final research analyst for Jev Signal.",
+          "You are the final research analyst for Liquid Signal.",
           "Answer only from the aggregate results and representative comments provided.",
           "Lead with the direct conclusion, mention the winning option and percentage, then add one concise caveat about relevance or sample limitations.",
           "Do not claim the result proves objective product quality; describe it as the opinion expressed by this video's commenters.",

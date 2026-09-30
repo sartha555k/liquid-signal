@@ -41,7 +41,7 @@ export const demoDataset: SignalDataset = {
   sourceLabel: "Showcase dataset",
   comments,
   analyzedAt: "2026-09-27T10:00:00.000Z",
-  model: "jev-1.13.0",
+  model: "Showcase reference (not a live d1 run)",
   inputTokens: 97842,
   costUsd: .0041,
 };

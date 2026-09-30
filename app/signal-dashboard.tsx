@@ -51,9 +51,9 @@ type YouTubeBatchResponse = {
 
 const YOUTUBE_IMPORT_MILESTONE = 10_000;
 const YOUTUBE_BATCH_SIZE = 1000;
-const JEV_BATCH_SIZE = 25;
-const JEV_BATCH_CONCURRENCY = 6;
-const ANALYSIS_VERSION = "compact-v2";
+const D1_BATCH_SIZE = 25;
+const D1_BATCH_CONCURRENCY = 2;
+const ANALYSIS_VERSION = "liquid-d1-v1";
 
 function normalizeCommentText(text: string) {
   return text.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
@@ -475,7 +475,7 @@ export default function SignalDashboard() {
     setPendingImport(null);
     setYoutubeOpen(false);
     toast.success(`Import complete — ${next.comments.length.toLocaleString()} comments ready`, {
-      description: "Click Analyse with Jev to classify every imported comment.",
+      description: "Click Analyse with D1 to classify every imported comment.",
     });
   }
 
@@ -578,7 +578,7 @@ export default function SignalDashboard() {
     };
     setDataset(next);
     void persistDataset(next);
-    toast.success(`Imported ${comments.length} comments`, { description: "Import complete. Click Analyse with Jev when you’re ready." });
+    toast.success(`Imported ${comments.length} comments`, { description: "Import complete. Click Analyse with D1 when you’re ready." });
   }
 
   function downloadImportedCsv() {
@@ -624,7 +624,7 @@ export default function SignalDashboard() {
     const audienceQuestion: AudienceQuestion = { id: crypto.randomUUID(), prompt, options };
     setDataset((current) => ({ ...current, audienceQuestion }));
     setQuestionOpen(false);
-    toast.success("Audience question added", { description: "Jev will answer it during the same analysis run." });
+    toast.success("Audience question added", { description: "D1 will answer it during the same analysis run." });
   }
 
   function removeAudienceQuestion() {
@@ -634,7 +634,7 @@ export default function SignalDashboard() {
     setQuestionOptions(["", ""]);
   }
 
-  async function analyzeWithJev() {
+  async function analyzeWithD1() {
     if (analyzing) return;
     const audienceOnly = Boolean(
       dataset.audienceQuestion
@@ -685,8 +685,8 @@ export default function SignalDashboard() {
     setAnalysisProgress(Math.round((alreadyAnalyzed / dataset.comments.length) * 100));
 
     const batches: SignalComment[][] = [];
-    for (let index = 0; index < pendingComments.length; index += JEV_BATCH_SIZE) {
-      batches.push(pendingComments.slice(index, index + JEV_BATCH_SIZE));
+    for (let index = 0; index < pendingComments.length; index += D1_BATCH_SIZE) {
+      batches.push(pendingComments.slice(index, index + D1_BATCH_SIZE));
     }
 
     const requestBatch = async (comments: SignalComment[]) => {
@@ -716,8 +716,8 @@ export default function SignalDashboard() {
     };
 
     try {
-      for (let index = 0; index < batches.length; index += JEV_BATCH_CONCURRENCY) {
-        const wave = batches.slice(index, index + JEV_BATCH_CONCURRENCY);
+      for (let index = 0; index < batches.length; index += D1_BATCH_CONCURRENCY) {
+        const wave = batches.slice(index, index + D1_BATCH_CONCURRENCY);
         const waveResults = await Promise.allSettled(wave.map(requestBatch));
         const payloads = waveResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
         const completedComments = payloads.flatMap((payload) => payload.comments ?? []);
@@ -757,7 +757,7 @@ export default function SignalDashboard() {
         if (current.comments.length <= 1000) void persistDataset(current);
         return current;
       });
-      toast.success(`Analysed all ${dataset.comments.length.toLocaleString()} comments with Jev`, {
+      toast.success(`Analysed all ${dataset.comments.length.toLocaleString()} comments with D1`, {
         description: `$${totalCost.toFixed(4)} total · ${duplicateSavings.toLocaleString()} duplicate calls avoided · ${cacheHits.toLocaleString()} cache hits`,
       });
     } catch (error) {
@@ -779,7 +779,7 @@ export default function SignalDashboard() {
     }
   }
 
-  function stopJevAnalysis() {
+  function stopD1Analysis() {
     analysisAbortRef.current?.abort();
   }
 
@@ -795,11 +795,11 @@ export default function SignalDashboard() {
       />
       <header className="sticky top-0 z-40 border-b border-black/10 bg-[#f3f1e9]/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-4 px-4 sm:px-7">
-          <a href="#" className="flex items-center gap-2.5" aria-label="Jev Signal home">
+          <a href="#" className="flex items-center gap-2.5" aria-label="Liquid Signal home">
             <span className="grid size-9 place-items-center rounded-[11px] bg-[#101827] text-[#dfff58] shadow-[inset_0_0_0_1px_rgba(255,255,255,.12)]">
               <CircleDot className="size-5" />
             </span>
-            <span className="text-[17px] font-black tracking-[-0.04em]">Jev Signal</span>
+            <span className="text-[17px] font-black tracking-[-0.04em]">Liquid Signal</span>
           </a>
           <button
             onClick={() => openComments()}
@@ -842,7 +842,7 @@ export default function SignalDashboard() {
           </div>
           <div className="mt-auto rounded-2xl bg-[#101827] p-4 text-white">
             <div className="flex items-center justify-between text-xs text-slate-300">
-              <span>Optimised analysis</span><span>6× parallel</span>
+              <span>Optimised analysis</span><span>5× per job</span>
             </div>
             <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
               <div className="h-full w-[24%] rounded-full bg-[#dfff58]" />
@@ -886,7 +886,7 @@ export default function SignalDashboard() {
                     <p className="font-bold text-emerald-950">{questionOnlyReady ? "New question ready" : readyAnalysisCount ? "Analysis paused — your results are saved" : "Import complete"}</p>
                     <p className="mt-1 text-sm leading-relaxed text-emerald-900/70">
                       {questionOnlyReady
-                        ? `Your existing signals are saved. Jev will only classify ${dataset.comments.length.toLocaleString()} comments for this new question.`
+                        ? `Your existing signals are saved. D1 will only classify ${dataset.comments.length.toLocaleString()} comments for this new question.`
                         : readyAnalysisCount
                         ? `${readyAnalysisCount.toLocaleString()} of ${dataset.comments.length.toLocaleString()} comments are complete. Resume to finish the remaining ${(dataset.comments.length - readyAnalysisCount).toLocaleString()}.`
                         : `${dataset.comments.length.toLocaleString()} comments are ready for signals, purchase intent${dataset.audienceQuestion ? ", and your audience question" : ""}.`}
@@ -901,8 +901,8 @@ export default function SignalDashboard() {
                     <Button onClick={editAudienceQuestion} variant="outline" className="h-11 rounded-xl border-emerald-800/20 bg-white/70 text-emerald-950">
                       <CircleHelp className="size-4" /> {dataset.audienceQuestion ? "Edit question" : "Add audience question"}
                     </Button>
-                    <Button onClick={analyzeWithJev} className="h-11 rounded-xl bg-[#101827] px-5 text-white hover:bg-[#1b2638]">
-                      <Sparkles className="size-4 text-[#dfff58]" /> {questionOnlyReady ? "Analyse new question" : readyAnalysisCount ? "Resume analysis" : dataset.audienceQuestion ? "Analyse both" : "Analyse with Jev"}
+                    <Button onClick={analyzeWithD1} className="h-11 rounded-xl bg-[#101827] px-5 text-white hover:bg-[#1b2638]">
+                      <Sparkles className="size-4 text-[#dfff58]" /> {questionOnlyReady ? "Analyse new question" : readyAnalysisCount ? "Resume analysis" : dataset.audienceQuestion ? "Analyse both" : "Analyse with D1"}
                     </Button>
                   </div>
                 )}
@@ -913,7 +913,7 @@ export default function SignalDashboard() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="font-bold text-[#101827]">Ask the audience one specific question</p>
-                      <p className="mt-1 text-sm text-slate-500">Jev will classify every relevant comment into one of your choices. Unclear comments are excluded automatically.</p>
+                      <p className="mt-1 text-sm text-slate-500">D1 will classify every relevant comment into one of your choices. Unclear comments are excluded automatically.</p>
                     </div>
                     <Button onClick={() => setQuestionOpen(false)} variant="ghost" size="icon" className="size-8 rounded-lg" aria-label="Close question editor"><X className="size-4" /></Button>
                   </div>
@@ -947,12 +947,12 @@ export default function SignalDashboard() {
           {analyzing && (
             <div className="mt-5 rounded-2xl border border-black/10 bg-white p-4">
               <div className="mb-2 flex items-center justify-between gap-4 text-sm font-semibold">
-                <span>Jev is analysing every imported comment</span><span>{analysisCount.toLocaleString()} / {dataset.comments.length.toLocaleString()}</span>
+                <span>D1 is analysing every imported comment</span><span>{analysisCount.toLocaleString()} / {dataset.comments.length.toLocaleString()}</span>
               </div>
               <Progress value={analysisProgress} className="h-2" />
               <div className="mt-3 flex items-center justify-between gap-4">
                 <p className="text-xs text-slate-500">Results appear as each protected batch finishes.</p>
-                <Button onClick={stopJevAnalysis} variant="ghost" size="sm" className="rounded-lg text-slate-600"><X className="size-4" /> Stop</Button>
+                <Button onClick={stopD1Analysis} variant="ghost" size="sm" className="rounded-lg text-slate-600"><X className="size-4" /> Stop</Button>
               </div>
             </div>
           )}
@@ -1018,7 +1018,7 @@ export default function SignalDashboard() {
               <div className="flex items-start justify-between border-b border-white/10 p-5 sm:p-7">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#dfff58]">{signalView === "intent" ? "Purchase signals" : signalView === "objections" ? "Objection focus" : "Signal overview"}</p>
-                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">{signalView === "intent" ? "Who looks ready to buy?" : signalView === "objections" ? "What is stopping the sale?" : "What did Jev find?"}</h2>
+                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">{signalView === "intent" ? "Who looks ready to buy?" : signalView === "objections" ? "What is stopping the sale?" : "What did D1 find?"}</h2>
                 </div>
                 <Badge className="rounded-full bg-white/10 px-3 text-slate-200 hover:bg-white/10">{signalView === "intent" ? `${intentComments.length} strong signals` : signalView === "objections" ? `${objectionComments.length} objections` : `${analyzed.length} analysed`}</Badge>
               </div>
@@ -1088,7 +1088,7 @@ export default function SignalDashboard() {
                     <div>
                       <BarChart3 className="mx-auto size-9 text-slate-500" />
                       <p className="mt-3 font-semibold">Signals will appear here</p>
-                      <p className="mt-1 text-sm text-slate-400">Run Jev analysis to build your objection map.</p>
+                      <p className="mt-1 text-sm text-slate-400">Run D1 analysis to build your objection map.</p>
                     </div>
                   </div>
                 )}
@@ -1155,7 +1155,7 @@ export default function SignalDashboard() {
           </div>
 
           <footer className="flex flex-col gap-2 py-8 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-            <span>Jev Signal · Decisions by Jev, actions controlled by you.</span>
+            <span>Liquid Signal · Decisions by D1, actions controlled by you.</span>
             <span>{dataset.model ?? "Awaiting analysis"} {dataset.costUsd != null ? `· $${dataset.costUsd.toFixed(4)} estimated` : ""}</span>
           </footer>
         </section>
@@ -1308,7 +1308,7 @@ export default function SignalDashboard() {
             <Badge className="rounded-full bg-[#dfff58] text-[#101827] hover:bg-[#dfff58]">Creative brief · {dataset.name}</Badge>
             <DialogHeader className="mt-5 text-left">
               <DialogTitle className="text-3xl font-black tracking-[-0.05em] text-white">Three hooks grounded in what people actually said.</DialogTitle>
-              <DialogDescription className="text-slate-400">Directions are templated from Jev’s ranked decisions—not invented evidence.</DialogDescription>
+              <DialogDescription className="text-slate-400">Directions are templated from D1’s ranked decisions—not invented evidence.</DialogDescription>
             </DialogHeader>
           </div>
           <div className="space-y-3 bg-[#f3f1e9] p-5 sm:p-6">
