@@ -13,14 +13,14 @@ function probability(value: unknown) {
 }
 
 /** Validate every requested answer before caching or returning any result. */
-export function validateDecisionAnswers(payload: unknown, questions: Record<string, unknown>) {
+export function validateDecisionAnswers(payload: unknown, questions: Record<string, unknown>, label = "Liquid d1") {
   const result = record(payload);
   const answers = record(result?.answers);
-  if (!answers) throw new Error("Liquid d1 returned an incomplete response.");
+  if (!answers) throw new Error(`${label} returned an incomplete response.`);
   for (const [name, rawQuestion] of Object.entries(questions)) {
     const question = rawQuestion as Question;
     const answer = record(answers[name]);
-    const invalid = () => new Error(`Liquid d1 returned an incomplete or invalid answer for ${name}.`);
+    const invalid = () => new Error(`${label} returned an incomplete or invalid answer for ${name}.`);
     if (!answer || answer.type !== question.type) throw invalid();
     if (question.type === "noul") {
       if (!probability(answer.noul)) throw invalid();

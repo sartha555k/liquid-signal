@@ -22,6 +22,7 @@ All private keys are in the ignored `backend/.env.local`:
 
 ```env
 LIQUID_API_KEY=your_liquid_key
+TYPESAFE_API_KEY=your_jev_key
 OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-5-mini
 YOUTUBE_API_KEY=your_youtube_key
@@ -38,6 +39,10 @@ API_BASE_URL=http://localhost:5174
 The build refuses to target the existing Jev deployment. It bundles no API keys, and requests import, analysis, suggestions and summaries from the new backend.
 
 ## What changed
+
+Version 0.6 adds **Decision model: Liquid d1 / Jev** in the extension and dashboard. The selected provider is sent with every batch. Each provider has separate cache keys and analysis versions; switching providers requires its own analysis. Dashboard snapshots are kept separately while the page is open. The extension remembers the selection, and completed reports always show their actual provider/model, regardless of later selections. CSV/JSON/PDF reports preserve that attribution. OpenAI remains responsible only for question suggestions and written summaries.
+
+Jev uses `https://api.typesafe.ai/v1/systemone`, model `jev-1.13.0`. Its existing input-token rate is an estimate, not a billing guarantee. No provider fallback occurs when a key is unavailable. All three AI keys stay on the backend.
 
 Liquid endpoint: `https://api.liquid.ai/decisions/v1/systemone`; model: `d1:free`.
 
@@ -56,6 +61,7 @@ Deploy `backend/` as a **new** application. Configure its server secrets in that
 ```sh
 cd backend
 node --test scripts/test-liquid-decisions.mjs
+node scripts/smoke-providers.mjs
 cd ../chrome-extension
 npm test
 npm run build

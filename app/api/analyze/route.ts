@@ -4,15 +4,17 @@ import { analysisCache } from "@/db/schema";
 import { readSecret } from "@/lib/server-env";
 import type { AudienceQuestion, ObjectionKey, SignalComment } from "@/lib/types";
 import { validateDecisionAnswers } from "@/lib/liquid-decisions";
+import { decisionModels, isDecisionProvider, type DecisionProvider } from "@/lib/decision-models";
 
-const MODEL = "d1:free";
-const API_URL = "https://api.liquid.ai/decisions/v1/systemone";
+const providers = {
+  liquid: { ...decisionModels.liquid, endpoint: "https://api.liquid.ai/decisions/v1/systemone", secret: "LIQUID_API_KEY" },
+  jev: { ...decisionModels.jev, endpoint: "https://api.typesafe.ai/v1/systemone", secret: "TYPESAFE_API_KEY" },
+} as const;
 const MAX_BATCH_SIZE = 25;
 const REQUEST_CONCURRENCY = 5;
 const CACHE_QUERY_CHUNK_SIZE = 50;
 const CACHE_WRITE_CHUNK_SIZE = 25;
 const MAX_D1_ATTEMPTS = 4;
-const ANALYSIS_VERSION = "liquid-d1-v1";
 
 type ClassificationResult = {
   comment: SignalComment;
@@ -90,7 +92,8 @@ function audienceCriteria(question: AudienceQuestion) {
   };
 }
 
-async function cacheKey(comment: SignalComment, question: AudienceQuestion | undefined, audienceOnly: boolean) {
+async function cacheKey(comment: SignalComment, question: AudienceQuestion | undefined, audienceOnly: boolean, provider: DecisionProvider) {
+  const { endpoint: API_URL, model: MODEL, version: ANALYSIS_VERSION } = providers[provider];
   const normalized = comment.text.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
   const questionSignature = question
     ? `${question.prompt.toLocaleLowerCase()}|${question.options.map((option) => option.toLocaleLowerCase()).join("|")}`
@@ -106,7 +109,9 @@ async function classify(
   apiKey: string,
   audienceOnly: boolean,
   signal: AbortSignal,
+  provider: DecisionProvider,
 ): Promise<ClassificationResult> {
+  const { endpoint: API_URL, model: MODEL, version: ANALYSIS_VERSION, label } = providers[provider];
   const questions: Record<string, unknown> = audienceOnly ? {} : {
     objection_type: {
       type: "choice",
@@ -160,16 +165,16 @@ async function classify(
       });
       payload = await response.json().catch(() => ({})) as D1Response & { detail?: string; message?: string };
       if (response.ok) {
-        validateDecisionAnswers(payload, questions);
+        validateDecisionAnswers(payload, questions, label);
         break;
       }
 
       const retryable = [429, 500, 502, 503, 504, 529].includes(response.status);
       if (!retryable) {
-        throw new NonRetryableD1Error(payload.detail ?? payload.message ?? `D1 returned ${response.status}`);
+        throw new NonRetryableD1Error(payload.detail ?? payload.message ?? `Decision model returned ${response.status}`);
       }
       if (attempt === MAX_D1_ATTEMPTS - 1) {
-        throw new Error(payload.detail ?? payload.message ?? `D1 returned ${response.status}`);
+        throw new Error(payload.detail ?? payload.message ?? `Decision model returned ${response.status}`);
       }
       await wait(retryDelay(response, attempt), signal);
     } catch (error) {
@@ -179,7 +184,7 @@ async function classify(
       await wait(Math.min(8_000, 500 * (2 ** attempt) + Math.random() * 250), signal);
     }
   }
-  if (!payload?.answers) throw new Error("D1 returned an incomplete response.");
+  if (!payload?.answers) throw new Error("Decision model returned an incomplete response.");
 
   const objection = payload.answers.objection_type;
   const moderation = payload.answers.moderation_status;
@@ -210,7 +215,7 @@ async function classify(
   }
 
   if (!objection || !moderation || !purchaseIntent) {
-    throw new Error("D1 did not return the complete signal analysis.");
+    throw new Error("Decision model did not return the complete signal analysis.");
   }
 
   const isObjection = clamp(1 - (objection.probabilities.none ?? (objection.choice === "none" ? 1 : 0)));
@@ -223,6 +228,8 @@ async function classify(
       ...comment,
       analysis: {
         version: ANALYSIS_VERSION,
+        provider,
+        model: payload.model || MODEL,
         isObjection,
         objectionType: chosenObjection as ObjectionKey,
         objectionConfidence: objection.confidence,
@@ -245,6 +252,7 @@ async function classifyWithWorkers(
   apiKey: string,
   audienceOnly: boolean,
   signal: AbortSignal,
+  provider: DecisionProvider,
 ) {
   const orderedResults = new Array<ClassificationResult | undefined>(misses.length);
   const failures: Error[] = [];
@@ -256,9 +264,9 @@ async function classifyWithWorkers(
       cursor += 1;
       if (index >= misses.length) return;
       try {
-        orderedResults[index] = await classify(misses[index].comment, question, apiKey, audienceOnly, signal);
+        orderedResults[index] = await classify(misses[index].comment, question, apiKey, audienceOnly, signal, provider);
       } catch (error) {
-        failures.push(error instanceof Error ? error : new Error("D1 classification failed"));
+        failures.push(error instanceof Error ? error : new Error("Decision classification failed"));
       }
     }
   }
@@ -273,10 +281,12 @@ async function classifyWithWorkers(
 export async function POST(request: Request) {
   try {
     const startedAt = Date.now();
-    const apiKey = readSecret("LIQUID_API_KEY");
-    if (!apiKey) return Response.json({ error: "Live D1 analysis is not configured yet." }, { status: 503 });
-
-    const body = await request.json() as { comments?: SignalComment[]; audienceQuestion?: unknown; audienceOnly?: boolean };
+    const body = await request.json() as { provider?: unknown; comments?: SignalComment[]; audienceQuestion?: unknown; audienceOnly?: boolean };
+    const provider = body.provider === undefined ? "liquid" : body.provider;
+    if (!isDecisionProvider(provider)) return Response.json({ error: "Choose Liquid d1 or Jev." }, { status: 400 });
+    const { model: MODEL, version: ANALYSIS_VERSION, label, secret } = providers[provider];
+    const apiKey = readSecret(secret);
+    if (!apiKey) return Response.json({ error: `${label} is not configured. Set ${secret} on the backend. No other model was used.` }, { status: 503 });
     const comments = (body.comments ?? []).filter((comment) => comment.text?.trim());
     const question = cleanAudienceQuestion(body.audienceQuestion);
     const audienceOnly = Boolean(body.audienceOnly);
@@ -291,7 +301,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Question-only analysis requires completed core signals and a valid audience question." }, { status: 400 });
     }
 
-    const keys = await Promise.all(comments.map((comment) => cacheKey(comment, question, audienceOnly)));
+    const keys = await Promise.all(comments.map((comment) => cacheKey(comment, question, audienceOnly, provider)));
     const cached = new Map<string, { analysis: SignalComment["analysis"]; model: string }>();
     try {
       const db = getDb();
@@ -310,6 +320,7 @@ export async function POST(request: Request) {
       apiKey,
       audienceOnly,
       request.signal,
+      provider,
     );
 
     if (results.length) {
@@ -330,9 +341,9 @@ export async function POST(request: Request) {
     }
 
     if (failures.length) {
-      console.warn(`D1 analysis completed ${results.length}/${misses.length} cache misses`, failures[0]);
+      console.warn(`Decision analysis completed ${results.length}/${misses.length} cache misses`, failures[0]);
       return Response.json({
-        error: `D1 completed ${results.length.toLocaleString()} comments but ${failures.length.toLocaleString()} need retrying. ${failures[0].message} Completed results were cached automatically.`,
+        error: `Decision model completed ${results.length.toLocaleString()} comments but ${failures.length.toLocaleString()} need retrying. ${failures[0].message} Completed results were cached automatically.`,
         completedCount: cached.size + results.length,
         failedCount: failures.length,
       }, { status: 503 });
@@ -345,9 +356,10 @@ export async function POST(request: Request) {
       const saved = cached.get(keys[index])?.analysis;
       // Cached classifications are reusable across runs with the same wording,
       // but the audience answer must point to this run's question ID.
-      return { ...comment, analysis: saved && question && saved.audienceAnswer
+      const analysis = saved && question && saved.audienceAnswer
         ? { ...saved, audienceAnswer: { ...saved.audienceAnswer, questionId: question.id } }
-        : saved };
+        : saved;
+      return { ...comment, analysis: analysis ? { ...analysis, provider, model: cached.get(keys[index])?.model ?? MODEL } : undefined };
     });
     const inputTokens = results.reduce((total, result) => total + result.inputTokens, 0);
     return Response.json({
@@ -355,9 +367,9 @@ export async function POST(request: Request) {
       model: results[0]?.model ?? cached.values().next().value?.model ?? MODEL,
       inputTokens,
       // The documented model is the free tier. Do not reuse D1's paid rate.
-      costUsd: 0,
-      pricingBasis: "d1:free tier; quota and future pricing are provider-controlled",
-      provider: "liquid",
+      costUsd: provider === "liquid" ? 0 : inputTokens * 0.042 / 1_000_000,
+      pricingBasis: provider === "liquid" ? "d1:free tier; quota and future pricing are provider-controlled" : "Estimate at the existing Jev configuration of $0.042 per million input tokens; verify your provider bill",
+      provider,
       outputTokens: 0,
       batchSize: MAX_BATCH_SIZE,
       cachedCount: comments.length - results.length,
@@ -366,7 +378,7 @@ export async function POST(request: Request) {
       elapsedMs: Date.now() - startedAt,
     });
   } catch (error) {
-    console.error("D1 analysis failed", error);
-    return Response.json({ error: error instanceof Error ? error.message : "D1 analysis could not be completed." }, { status: 502 });
+    console.error("Decision analysis failed", error);
+    return Response.json({ error: error instanceof Error ? error.message : "Decision analysis could not be completed." }, { status: 502 });
   }
 }

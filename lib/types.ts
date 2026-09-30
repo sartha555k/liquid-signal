@@ -22,6 +22,8 @@ export type SignalComment = {
   sourceId?: string;
   publishedAt?: string;
   analysis?: {
+    provider?: "liquid" | "jev";
+    model?: string;
     version?: string;
     isObjection: number;
     objectionType: ObjectionKey;

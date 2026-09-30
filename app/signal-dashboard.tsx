@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { decisionModels, type DecisionProvider } from "@/lib/decision-models";
 import {
   AlertCircle,
   ArrowRight,
@@ -53,14 +54,13 @@ const YOUTUBE_IMPORT_MILESTONE = 10_000;
 const YOUTUBE_BATCH_SIZE = 1000;
 const D1_BATCH_SIZE = 25;
 const D1_BATCH_CONCURRENCY = 2;
-const ANALYSIS_VERSION = "liquid-d1-v1";
 
 function normalizeCommentText(text: string) {
   return text.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
 }
 
-function analysisMatches(comment: SignalComment, question?: AudienceQuestion) {
-  if (comment.analysis?.version !== ANALYSIS_VERSION) return false;
+function analysisMatches(comment: SignalComment, question?: AudienceQuestion, provider: DecisionProvider = "liquid") {
+  if (comment.analysis?.version !== decisionModels[provider].version) return false;
   return !question || comment.analysis.audienceAnswer?.questionId === question.id;
 }
 
@@ -180,6 +180,22 @@ async function persistDataset(dataset: SignalDataset) {
 
 export default function SignalDashboard() {
   const [dataset, setDataset] = useState<SignalDataset>(demoDataset);
+  const [provider, setProvider] = useState<DecisionProvider>("liquid");
+  const { version: ANALYSIS_VERSION, label: modelLabel } = decisionModels[provider];
+  const modelSnapshots = useRef(new Map<string, SignalDataset>());
+
+  function selectProvider(next: DecisionProvider) {
+    if (next === provider || analyzing || importing) return;
+    if (dataset.source === "demo") { setProvider(next); return; }
+    modelSnapshots.current.set(`${dataset.id}|${provider}`, dataset);
+    const saved = modelSnapshots.current.get(`${dataset.id}|${next}`);
+    setDataset(saved ? { ...saved, audienceQuestion: dataset.audienceQuestion } : {
+      ...dataset,
+      comments: dataset.comments.map((comment) => ({ ...comment, analysis: undefined })),
+      analyzedAt: undefined, model: undefined, inputTokens: 0, costUsd: 0,
+    });
+    setProvider(next);
+  }
   const [signalView, setSignalView] = useState<SignalView>("all");
   const [commentFilter, setCommentFilter] = useState<CommentFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<ObjectionKey | "all">("all");
@@ -221,13 +237,13 @@ export default function SignalDashboard() {
   );
 
   const readyAnalysisCount = useMemo(
-    () => dataset.comments.filter((comment) => analysisMatches(comment, dataset.audienceQuestion)).length,
-    [dataset.comments, dataset.audienceQuestion]
+    () => dataset.comments.filter((comment) => analysisMatches(comment, dataset.audienceQuestion, provider)).length,
+    [dataset.comments, dataset.audienceQuestion, provider]
   );
 
   const coreAnalysisCount = useMemo(
     () => dataset.comments.filter((comment) => comment.analysis?.version === ANALYSIS_VERSION).length,
-    [dataset.comments]
+    [dataset.comments, ANALYSIS_VERSION]
   );
   const questionOnlyReady = Boolean(
     dataset.audienceQuestion
@@ -475,7 +491,7 @@ export default function SignalDashboard() {
     setPendingImport(null);
     setYoutubeOpen(false);
     toast.success(`Import complete — ${next.comments.length.toLocaleString()} comments ready`, {
-      description: "Click Analyse with D1 to classify every imported comment.",
+      description: "Click Analyse to classify every imported comment.",
     });
   }
 
@@ -578,7 +594,7 @@ export default function SignalDashboard() {
     };
     setDataset(next);
     void persistDataset(next);
-    toast.success(`Imported ${comments.length} comments`, { description: "Import complete. Click Analyse with D1 when you’re ready." });
+    toast.success(`Imported ${comments.length} comments`, { description: "Import complete. Click Analyse when you’re ready." });
   }
 
   function downloadImportedCsv() {
@@ -624,7 +640,7 @@ export default function SignalDashboard() {
     const audienceQuestion: AudienceQuestion = { id: crypto.randomUUID(), prompt, options };
     setDataset((current) => ({ ...current, audienceQuestion }));
     setQuestionOpen(false);
-    toast.success("Audience question added", { description: "D1 will answer it during the same analysis run." });
+    toast.success("Audience question added", { description: "The selected model will answer it during the same analysis run." });
   }
 
   function removeAudienceQuestion() {
@@ -650,7 +666,7 @@ export default function SignalDashboard() {
     const pendingComments: SignalComment[] = [];
     let alreadyAnalyzed = 0;
     groups.forEach((comments, key) => {
-      const existing = comments.find((comment) => analysisMatches(comment, dataset.audienceQuestion))?.analysis;
+      const existing = comments.find((comment) => analysisMatches(comment, dataset.audienceQuestion, provider))?.analysis;
       if (existing) {
         reusable.set(key, existing);
         alreadyAnalyzed += comments.length;
@@ -694,7 +710,7 @@ export default function SignalDashboard() {
         const response = await fetch("/api/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ comments, audienceQuestion: dataset.audienceQuestion, audienceOnly }),
+          body: JSON.stringify({ comments, audienceQuestion: dataset.audienceQuestion, audienceOnly, provider }),
           signal: controller.signal,
         });
         const payload = await response.json() as {
@@ -757,7 +773,7 @@ export default function SignalDashboard() {
         if (current.comments.length <= 1000) void persistDataset(current);
         return current;
       });
-      toast.success(`Analysed all ${dataset.comments.length.toLocaleString()} comments with D1`, {
+      toast.success(`Analysed all ${dataset.comments.length.toLocaleString()} comments with ${modelLabel}`, {
         description: `$${totalCost.toFixed(4)} total · ${duplicateSavings.toLocaleString()} duplicate calls avoided · ${cacheHits.toLocaleString()} cache hits`,
       });
     } catch (error) {
@@ -877,6 +893,14 @@ export default function SignalDashboard() {
             </div>
           </div>
 
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+            <div><p className="text-sm font-bold">Decision model</p><p className="mt-1 text-xs text-slate-500">Same comments, your choice of model. Results stay separate.</p></div>
+            <div className="flex gap-1 rounded-xl bg-slate-100 p-1" role="group" aria-label="Decision model">
+              {(["liquid", "jev"] as const).map((choice) => <button key={choice} type="button" aria-pressed={provider === choice} disabled={analyzing || importing} onClick={() => selectProvider(choice)} className={`rounded-lg px-4 py-2 text-sm font-semibold transition disabled:opacity-50 ${provider === choice ? "bg-[#101827] text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}>{decisionModels[choice].label}</button>)}
+            </div>
+            <span className="w-full text-xs text-slate-500">{dataset.source === "demo" ? "Showcase data — import comments to run a live analysis." : dataset.model ? `Results from ${dataset.model}` : `Ready to analyse with ${modelLabel}. Switching models requires its own analysis.`}</span>
+          </div>
+
           {dataset.source !== "demo" && (readyAnalysisCount < dataset.comments.length || questionOpen) && !analyzing && (
             <div className="mt-5 rounded-2xl border border-emerald-700/20 bg-emerald-50 p-4 sm:p-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -886,7 +910,7 @@ export default function SignalDashboard() {
                     <p className="font-bold text-emerald-950">{questionOnlyReady ? "New question ready" : readyAnalysisCount ? "Analysis paused — your results are saved" : "Import complete"}</p>
                     <p className="mt-1 text-sm leading-relaxed text-emerald-900/70">
                       {questionOnlyReady
-                        ? `Your existing signals are saved. D1 will only classify ${dataset.comments.length.toLocaleString()} comments for this new question.`
+                        ? `Your existing signals are saved. ${modelLabel} will only classify ${dataset.comments.length.toLocaleString()} comments for this new question.`
                         : readyAnalysisCount
                         ? `${readyAnalysisCount.toLocaleString()} of ${dataset.comments.length.toLocaleString()} comments are complete. Resume to finish the remaining ${(dataset.comments.length - readyAnalysisCount).toLocaleString()}.`
                         : `${dataset.comments.length.toLocaleString()} comments are ready for signals, purchase intent${dataset.audienceQuestion ? ", and your audience question" : ""}.`}
@@ -902,7 +926,7 @@ export default function SignalDashboard() {
                       <CircleHelp className="size-4" /> {dataset.audienceQuestion ? "Edit question" : "Add audience question"}
                     </Button>
                     <Button onClick={analyzeWithD1} className="h-11 rounded-xl bg-[#101827] px-5 text-white hover:bg-[#1b2638]">
-                      <Sparkles className="size-4 text-[#dfff58]" /> {questionOnlyReady ? "Analyse new question" : readyAnalysisCount ? "Resume analysis" : dataset.audienceQuestion ? "Analyse both" : "Analyse with D1"}
+                      <Sparkles className="size-4 text-[#dfff58]" /> {questionOnlyReady ? "Analyse new question" : readyAnalysisCount ? "Resume analysis" : dataset.audienceQuestion ? "Analyse both" : `Analyse with ${modelLabel}`}
                     </Button>
                   </div>
                 )}
@@ -913,7 +937,7 @@ export default function SignalDashboard() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="font-bold text-[#101827]">Ask the audience one specific question</p>
-                      <p className="mt-1 text-sm text-slate-500">D1 will classify every relevant comment into one of your choices. Unclear comments are excluded automatically.</p>
+                      <p className="mt-1 text-sm text-slate-500">The selected model will classify every relevant comment into one of your choices. Unclear comments are excluded automatically.</p>
                     </div>
                     <Button onClick={() => setQuestionOpen(false)} variant="ghost" size="icon" className="size-8 rounded-lg" aria-label="Close question editor"><X className="size-4" /></Button>
                   </div>
@@ -947,7 +971,7 @@ export default function SignalDashboard() {
           {analyzing && (
             <div className="mt-5 rounded-2xl border border-black/10 bg-white p-4">
               <div className="mb-2 flex items-center justify-between gap-4 text-sm font-semibold">
-                <span>D1 is analysing every imported comment</span><span>{analysisCount.toLocaleString()} / {dataset.comments.length.toLocaleString()}</span>
+                <span>{modelLabel} is analysing every imported comment</span><span>{analysisCount.toLocaleString()} / {dataset.comments.length.toLocaleString()}</span>
               </div>
               <Progress value={analysisProgress} className="h-2" />
               <div className="mt-3 flex items-center justify-between gap-4">
@@ -1018,7 +1042,7 @@ export default function SignalDashboard() {
               <div className="flex items-start justify-between border-b border-white/10 p-5 sm:p-7">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#dfff58]">{signalView === "intent" ? "Purchase signals" : signalView === "objections" ? "Objection focus" : "Signal overview"}</p>
-                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">{signalView === "intent" ? "Who looks ready to buy?" : signalView === "objections" ? "What is stopping the sale?" : "What did D1 find?"}</h2>
+                  <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em]">{signalView === "intent" ? "Who looks ready to buy?" : signalView === "objections" ? "What is stopping the sale?" : dataset.source === "demo" ? "What do the showcase signals show?" : `What did ${modelLabel} find?`}</h2>
                 </div>
                 <Badge className="rounded-full bg-white/10 px-3 text-slate-200 hover:bg-white/10">{signalView === "intent" ? `${intentComments.length} strong signals` : signalView === "objections" ? `${objectionComments.length} objections` : `${analyzed.length} analysed`}</Badge>
               </div>
@@ -1088,7 +1112,7 @@ export default function SignalDashboard() {
                     <div>
                       <BarChart3 className="mx-auto size-9 text-slate-500" />
                       <p className="mt-3 font-semibold">Signals will appear here</p>
-                      <p className="mt-1 text-sm text-slate-400">Run D1 analysis to build your objection map.</p>
+                      <p className="mt-1 text-sm text-slate-400">Run a decision analysis to build your objection map.</p>
                     </div>
                   </div>
                 )}
@@ -1155,7 +1179,7 @@ export default function SignalDashboard() {
           </div>
 
           <footer className="flex flex-col gap-2 py-8 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-            <span>Liquid Signal · Decisions by D1, actions controlled by you.</span>
+            <span>Liquid Signal · Your choice of decision model, actions controlled by you.</span>
             <span>{dataset.model ?? "Awaiting analysis"} {dataset.costUsd != null ? `· $${dataset.costUsd.toFixed(4)} estimated` : ""}</span>
           </footer>
         </section>
@@ -1308,7 +1332,7 @@ export default function SignalDashboard() {
             <Badge className="rounded-full bg-[#dfff58] text-[#101827] hover:bg-[#dfff58]">Creative brief · {dataset.name}</Badge>
             <DialogHeader className="mt-5 text-left">
               <DialogTitle className="text-3xl font-black tracking-[-0.05em] text-white">Three hooks grounded in what people actually said.</DialogTitle>
-              <DialogDescription className="text-slate-400">Directions are templated from D1’s ranked decisions—not invented evidence.</DialogDescription>
+              <DialogDescription className="text-slate-400">Directions are templated from the model’s ranked decisions—not invented evidence.</DialogDescription>
             </DialogHeader>
           </div>
           <div className="space-y-3 bg-[#f3f1e9] p-5 sm:p-6">
