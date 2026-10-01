@@ -6,7 +6,7 @@ const comments = [{ id: "provider-price", text: "Too expensive. The price is why
 
 async function request(body, status = 200) {
   const response = await fetch(`${base}/api/analyze`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", ...(process.env.API_ACCESS_TOKEN ? { Authorization: `Bearer ${process.env.API_ACCESS_TOKEN}` } : {}) },
     body: JSON.stringify(body), signal: AbortSignal.timeout(90_000),
   });
   const payload = await response.json();
