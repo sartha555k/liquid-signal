@@ -38,8 +38,22 @@ const localBindingConfig = {
 
 export default defineConfig(async () => {
   if (process.env.DEPLOY_TARGET === "render") {
+    const workerDb = fileURLToPath(new URL("./db/index.ts", import.meta.url));
+    const nodeDb = fileURLToPath(new URL("./db/node-index.ts", import.meta.url));
     return {
-      plugins: [vinext()], server: { host: "0.0.0.0" },
+      plugins: [{
+        name: "render-sqlite-database",
+        enforce: "pre",
+        resolveId(source) {
+          // vinext's TS-path resolver can bypass the ordinary @/db alias.
+          // Intercept both the original import and its resolved file path.
+          if (source === "@/db" || source === workerDb || source === workerDb.slice(0, -3)) return nodeDb;
+        },
+        load(id) {
+          // Also cover imports already resolved by framework build hooks.
+          if (id.split("?")[0] === workerDb) return `export { getDb } from ${JSON.stringify(nodeDb)};`;
+        },
+      }, vinext()], server: { host: "0.0.0.0" },
       resolve: { alias: [
         { find: "cloudflare:workers", replacement: fileURLToPath(new URL("./lib/node-env.ts", import.meta.url)) },
         { find: /^@\/db$/, replacement: fileURLToPath(new URL("./db/node-index.ts", import.meta.url)) },

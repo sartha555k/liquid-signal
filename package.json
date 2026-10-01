@@ -6,7 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build:render": "DEPLOY_TARGET=render vinext build",
+    "build:render": "DEPLOY_TARGET=render vinext build && node scripts/test-render-bundle.mjs",
     "start:render": "vinext start --hostname 0.0.0.0",
     "db:local": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local --config wrangler.local.json --persist-to .wrangler/state",
     "test:liquid": "node --test scripts/test-liquid-decisions.mjs",
