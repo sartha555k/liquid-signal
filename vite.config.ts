@@ -44,12 +44,12 @@ export default defineConfig(async () => {
       plugins: [{
         name: "render-sqlite-database",
         enforce: "pre",
-        resolveId(source) {
+        resolveId(source: string) {
           // vinext's TS-path resolver can bypass the ordinary @/db alias.
           // Intercept both the original import and its resolved file path.
           if (source === "@/db" || source === workerDb || source === workerDb.slice(0, -3)) return nodeDb;
         },
-        load(id) {
+        load(id: string) {
           // Also cover imports already resolved by framework build hooks.
           if (id.split("?")[0] === workerDb) return `export { getDb } from ${JSON.stringify(nodeDb)};`;
         },
