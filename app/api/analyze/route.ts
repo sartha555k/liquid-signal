@@ -5,13 +5,12 @@ import { readSecret } from "@/lib/server-env";
 import type { AudienceQuestion, ObjectionKey, SignalComment } from "@/lib/types";
 import { validateDecisionAnswers } from "@/lib/liquid-decisions";
 import { decisionModels, isDecisionProvider, type DecisionProvider } from "@/lib/decision-models";
+import { MAX_ANALYSIS_BATCH_SIZE as MAX_BATCH_SIZE, ANALYSIS_WORKERS_PER_REQUEST as REQUEST_CONCURRENCY, runDecisionWorkers } from "@/lib/analysis-batching.mjs";
 
 const providers = {
   liquid: { ...decisionModels.liquid, endpoint: "https://api.liquid.ai/decisions/v1/systemone", secret: "LIQUID_API_KEY" },
   jev: { ...decisionModels.jev, endpoint: "https://api.typesafe.ai/v1/systemone", secret: "TYPESAFE_API_KEY" },
 } as const;
-const MAX_BATCH_SIZE = 25;
-const REQUEST_CONCURRENCY = 5;
 const CACHE_QUERY_CHUNK_SIZE = 50;
 const CACHE_WRITE_CHUNK_SIZE = 25;
 const MAX_D1_ATTEMPTS = 4;
@@ -254,28 +253,11 @@ async function classifyWithWorkers(
   signal: AbortSignal,
   provider: DecisionProvider,
 ) {
-  const orderedResults = new Array<ClassificationResult | undefined>(misses.length);
-  const failures: Error[] = [];
-  let cursor = 0;
-
-  async function worker() {
-    while (!signal.aborted) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= misses.length) return;
-      try {
-        orderedResults[index] = await classify(misses[index].comment, question, apiKey, audienceOnly, signal, provider);
-      } catch (error) {
-        failures.push(error instanceof Error ? error : new Error("Decision classification failed"));
-      }
-    }
-  }
-
-  await Promise.all(Array.from(
-    { length: Math.min(REQUEST_CONCURRENCY, misses.length) },
-    () => worker(),
-  ));
-  return { results: orderedResults.filter((result): result is ClassificationResult => Boolean(result)), failures };
+  return runDecisionWorkers(
+    misses,
+    ({ comment }) => classify(comment, question, apiKey, audienceOnly, signal, provider),
+    signal,
+  );
 }
 
 export async function POST(request: Request) {

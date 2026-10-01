@@ -37,13 +37,13 @@ The extension points at `https://liquid-signal.onrender.com`. Reload its existin
 
 ### Unrestricted public demo
 
-With `DEMO_ACCESS_MODE=public` and `DEMO_USAGE_LIMITS=off`, there are **no application daily quotas or request-rate quotas**, and the extension has no 1,000-comment sample ceiling. Choose a preset or enter any positive whole-number custom sample; imports stop when the video has no more comments. Requests remain small (250-comment import chunks and 25-comment analysis batches) for reliability; these are technical batch sizes, not total usage limits. JSON validation, private dataset protection, and provider limits remain in force. Long-comment classification uses its first 2,000 characters; local exports preserve full imported text.
+With `DEMO_ACCESS_MODE=public` and `DEMO_USAGE_LIMITS=off`, there are **no application daily quotas or request-rate quotas**, and the extension has no 1,000-comment sample ceiling. Choose a preset or enter any positive whole-number custom sample; imports stop when the video has no more comments. Requests use 250-comment import chunks and 100-comment analysis batches; these are technical batch sizes, not total usage limits. Two extension workers feed ten classification workers per backend request (up to 20 concurrent provider calls per extension run). Both Liquid and Jev receive one comment per native call, with all typed questions together. JSON validation, private dataset protection, and provider limits remain in force. Long-comment classification uses its first 2,000 characters; local exports preserve full imported text.
 
 **Anyone, including bots outside the extension, can consume all API credits or incur charges.** This mode has no app spending protection and must be enabled only with explicit owner approval. Set `DEMO_USAGE_LIMITS=on` (or remove it) to restore quotas. Supabase and login are not used in either mode.
 
 ### Optional limited mode
 
-The extension offers up to 1,000 comments per sample. The backend accepts only POST requests for import, suggestions, classification and summaries; shared dataset APIs are blocked. JSON bodies are limited to 128 KiB, classification batches to 25 comments, comment text to 2,000 characters, and questions/choices to 240/80 characters. Exports retain original text; longer comments are truncated only for classification. Both decision models remain available.
+The extension offers up to 1,000 comments per sample. The backend accepts only POST requests for import, suggestions, classification and summaries; shared dataset APIs are blocked. JSON bodies are limited to 1 MiB to fit 100 multilingual comments, classification batches to 100 comments, comment text to 2,000 characters, and questions/choices to 240/80 characters. Exports retain original text; longer comments are truncated only for classification. Both decision models remain available.
 
 UTC daily quotas apply atomically across concurrent requests:
 

@@ -46,7 +46,7 @@ Jev uses `https://api.typesafe.ai/v1/systemone`, model `jev-1.13.0`. Its existin
 
 Liquid endpoint: `https://api.liquid.ai/decisions/v1/systemone`; model: `d1:free`.
 
-The existing analysis questions and result/report format remain compatible. All core questions plus the audience question share one call per comment. The extension sends 25 comments per backend job, using two workers; each backend job uses up to five d1 workers (up to ten provider requests from one extension run). Liquid does not document a 1,000-comment provider batch limit, so a 1,000-comment sample is processed through this bounded queue.
+The existing analysis questions and result/report format remain compatible. All core questions plus the audience question share one call per comment. The extension sends 100 comments per backend job, using two workers; each backend job uses up to ten classification workers (up to 20 provider requests from one extension run). These settings apply to both Liquid and Jev. This batches the extension/backend transport, not the provider's native single-comment API: a 1,000-comment sample uses ten backend jobs, assembled in input order. Provider retries and completed-result caching remain enabled.
 
 Every requested answer is validated before storing results. Incomplete answers are retried rather than cached. Cache keys include Liquid's endpoint, model and analysis version, keeping them separate from Jev results. Cost reporting uses the documented `d1:free` tier rather than Jev's rate; GPT and YouTube have separate usage policies, and Liquid's future pricing/quotas are not guaranteed.
 

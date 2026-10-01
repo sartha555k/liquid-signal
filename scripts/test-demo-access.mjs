@@ -23,10 +23,20 @@ test('demo rejects private endpoints, malformed arrays and unbounded input', () 
   for (const [endpoint, body] of [
     ['/api/datasets', {}], ['/api/analyze', { comments: {} }],
     ['/api/analyze', { comments: [{ id: 'one', text: 'x'.repeat(2001) }] }],
-    ['/api/analyze', { comments: Array.from({ length: 26 }, (_, i) => ({ id: String(i), text: 'test' })) }],
+    ['/api/analyze', { comments: Array.from({ length: 101 }, (_, i) => ({ id: String(i), text: 'test' })) }],
     ['/api/youtube', { url: 'video', batchSize: '1000' }],
     ['/api/youtube', { url: 'video', batchSize: 1001 }],
   ]) assert.throws(() => demoCost(endpoint, body), DemoError);
+});
+test('100 multilingual comments fit the body guard for both providers', async () => {
+  const comments = Array.from({ length: 100 }, (_, i) => ({ id: String(i), text: '好'.repeat(2000) }));
+  for (const provider of ['liquid', 'jev']) {
+    const body = { provider, comments, audienceQuestion: { id: 'batch-test', prompt: 'What matters?', options: ['Pricing', 'Camera'] } };
+    const request = new Request('http://localhost/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const parsed = await readDemoBody(request);
+    assert.deepEqual(demoCost('/api/analyze', parsed), { units: 100, characters: 200000 });
+    assert.equal((await request.json()).comments.length, 100);
+  }
 });
 test('JSON body limits apply without relying on content-length and preserve original body', async () => {
   const valid = new Request('http://localhost/api/suggestions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: 'video' }) });
