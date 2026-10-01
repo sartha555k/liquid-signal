@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { timingSafeEqual, createHash } from "node:crypto";
-import { DemoError, demoCost, demoReservations, readDemoBody } from "./lib/demo-policy.mjs";
+import { DemoError, demoCost, demoReservations, readDemoBody, demoUsageLimited } from "./lib/demo-policy.mjs";
 
 export async function middleware(request: NextRequest) {
   if (!request.nextUrl.pathname.startsWith("/api/") || request.nextUrl.pathname === "/api/health") return NextResponse.next();
@@ -12,6 +12,9 @@ export async function middleware(request: NextRequest) {
       const path = request.nextUrl.pathname;
       const body = await readDemoBody(request);
       const cost = demoCost(path, body);
+      // Public unrestricted mode still validates individual request sizes and
+      // blocks shared dataset access, but has no app usage or rate quotas.
+      if (!demoUsageLimited()) return NextResponse.next();
       // Render routes through its edge proxy. Global caps remain enforced
       // regardless of the network identifier; no client-provided demo ID.
       const ip = request.headers.get("cf-connecting-ip")

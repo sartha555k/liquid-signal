@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { DemoError, demoCost, demoReservations, readDemoBody, DEMO_MAX_BODY_BYTES } from '../lib/demo-policy.mjs';
+import { DemoError, demoCost, demoReservations, readDemoBody, DEMO_MAX_BODY_BYTES, demoUsageLimited } from '../lib/demo-policy.mjs';
 import { reserveDemoUsage } from '../lib/demo-quota-node.mjs';
 import { getSqlite } from '../db/sqlite-driver.mjs';
 process.env.SQLITE_PATH = ':memory:';
+
+test('usage quotas can be explicitly disabled without changing private-mode protection', () => {
+  assert.equal(demoUsageLimited({}), true);
+  assert.equal(demoUsageLimited({ DEMO_USAGE_LIMITS: 'OFF' }), true);
+  assert.equal(demoUsageLimited({ DEMO_USAGE_LIMITS: 'off' }), false);
+  const source = readFileSync(new URL('../middleware.ts', import.meta.url), 'utf8');
+  assert.match(source, /if \(!demoUsageLimited\(\)\) return NextResponse.next\(\)/);
+  assert.ok(source.indexOf('demoCost(path, body)') < source.indexOf('if (!demoUsageLimited())'));
+});
 
 test('demo costs reflect actual comment count and text length', () => {
   assert.deepEqual(demoCost('/api/analyze', { comments: [{ id: 'one', text: 'camera' }] }), { units: 1, characters: 6 });

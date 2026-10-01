@@ -18,6 +18,7 @@ This separate build supports both Liquid d1 and Jev. Original Jev repositories r
 | Variable | Value |
 | --- | --- |
 | `DEMO_ACCESS_MODE` | `public` for the no-login demo; leave unset for private mode |
+| `DEMO_USAGE_LIMITS` | `off` for the owner-approved unrestricted demo; unset keeps the quotas below |
 | `API_ACCESS_TOKEN` | Private-mode server credential only; never bundle in the extension |
 | `LIQUID_API_KEY` | Your Liquid API key |
 | `TYPESAFE_API_KEY` | Your Jev/TypeSafe API key |
@@ -33,6 +34,14 @@ Public access is explicitly opt-in: set `DEMO_ACCESS_MODE=public` only after app
 The extension points at `https://liquid-signal.onrender.com`. Reload its existing installed folder in Chrome. It bundles only this public URL, needs no cookies, and has no access-token input. In public demo mode, users need no account, Google OAuth, Supabase session, or sign-in. Reports stay local in the Chrome profile. Legacy token preferences are removed without deleting reports.
 
 ## No-login demo safeguards
+
+### Unrestricted public demo
+
+With `DEMO_ACCESS_MODE=public` and `DEMO_USAGE_LIMITS=off`, there are **no application daily quotas or request-rate quotas**, and the extension has no 1,000-comment sample ceiling. Choose a preset or enter any positive whole-number custom sample; imports stop when the video has no more comments. Requests remain small (250-comment import chunks and 25-comment analysis batches) for reliability; these are technical batch sizes, not total usage limits. JSON validation, private dataset protection, and provider limits remain in force. Long-comment classification uses its first 2,000 characters; local exports preserve full imported text.
+
+**Anyone, including bots outside the extension, can consume all API credits or incur charges.** This mode has no app spending protection and must be enabled only with explicit owner approval. Set `DEMO_USAGE_LIMITS=on` (or remove it) to restore quotas. Supabase and login are not used in either mode.
+
+### Optional limited mode
 
 The extension offers up to 1,000 comments per sample. The backend accepts only POST requests for import, suggestions, classification and summaries; shared dataset APIs are blocked. JSON bodies are limited to 128 KiB, classification batches to 25 comments, comment text to 2,000 characters, and questions/choices to 240/80 characters. Exports retain original text; longer comments are truncated only for classification. Both decision models remain available.
 
